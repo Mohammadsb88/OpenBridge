@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">OpenBridge</string>
+    <string name="tab_bridge">Bridge</string>
+    <string name="tab_activity">Activity</string>
+    <string name="tab_settings">Logs &amp; Settings</string>
+
+    <string name="status_connected">Connected to iPhone</string>
+    <string name="status_advertising">Waiting for iPhone (Advertising BLE)</string>
+    <string name="status_stopped">Bridge Stopped</string>
+
+    <string name="btn_start_bridge">Start Bridge Service</string>
+    <string name="btn_stop_bridge">Stop Bridge Service</string>
+    <string name="btn_grant_permissions">Grant Required Permissions</string>
+    <string name="btn_battery_optimization">Allow Unrestricted Battery</string>
+    <string name="btn_unpair">Unpair &amp; Rotate Keys</string>
+    <string name="btn_test_sms">Send Test OTP to iPhone</string>
+    <string name="btn_test_call">Send Test Call Alert</string>
+    <string name="btn_copy_logs">Copy Logs</string>
+    <string name="btn_clear_logs">Clear</string>
+
+    <string name="qr_title">Pair with iPhone</string>
+    <string name="qr_subtitle">Scan this QR code in the OpenBridge iOS app. Your E2EE key stays strictly on-device.</string>
+    <string name="paired_badge">Paired: %1$s</string>
+    <string name="not_paired_badge">Not Paired Yet</string>
+
+    <string name="permissions_title">Permissions Checklist</string>
+    <string name="permissions_all_ok">All required permissions granted</string>
+    <string name="permissions_missing">Some permissions are missing</string>
+
+    <string name="activity_empty">No relayed SMS or Call events yet.</string>
+    <string name="otp_label">OTP: %1$s</string>
+
+    <string name="language_title">Language</string>
+    <string name="lang_system">System Default</string>
+    <string name="lang_en">English</string>
+    <string name="lang_fa">فارسی (Persian)</string>
+
+    <string name="notif_channel_name">OpenBridge Service</string>
+    <string name="notif_running_title">OpenBridge Active</string>
+    <string name="notif_running_connected">Connected &amp; relaying to iPhone</string>
+    <string name="notif_running_waiting">Advertising BLE — ready for iPhone</string>
+    <string name="quick_sms_default">I cannot talk right now. I will call you back soon.</string>
+</resources>

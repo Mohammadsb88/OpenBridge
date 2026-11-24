@@ -1,0 +1,31 @@
+# macOS / Xcode / iOS
+.DS_Store
+*.xcuserdata
+*.xcworkspace
+DerivedData/
+build/
+*.ipa
+*.dSYM.zip
+*.dSYM
+ios/*.xcodeproj/
+
+# Android / Gradle
+.gradle/
+local.properties
+*.apk
+*.aab
+*.ap_
+*.dex
+.cxx/
+captures/
+android/.idea/
+android/app/build/
+android/build/
+
+# Secrets / Signing
+*.jks
+*.keystore
+*.p12
+*.mobileprovision
+.env
+.env.*

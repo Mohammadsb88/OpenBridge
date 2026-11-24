@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">OpenBridge</string>
+    <string name="tab_bridge">پل ارتباطی</string>
+    <string name="tab_activity">رویدادها</string>
+    <string name="tab_settings">لاگ و تنظیمات</string>
+
+    <string name="status_connected">متصل به آیفون</string>
+    <string name="status_advertising">در انتظار آیفون (بلوتوث فعال)</string>
+    <string name="status_stopped">سرویس متوقف است</string>
+
+    <string name="btn_start_bridge">شروع سرویس پل</string>
+    <string name="btn_stop_bridge">توقف سرویس پل</string>
+    <string name="btn_grant_permissions">دادن مجوزهای لازم</string>
+    <string name="btn_battery_optimization">غیرفعال‌سازی محدودیت باتری</string>
+    <string name="btn_unpair">لغو جفت‌سازی و ساخت کلید جدید</string>
+    <string name="btn_test_sms">ارسال پیامک تستی (OTP) به آیفون</string>
+    <string name="btn_test_call">ارسال اعلان تماس تستی</string>
+    <string name="btn_copy_logs">کپی لاگ‌ها</string>
+    <string name="btn_clear_logs">پاک کردن</string>
+
+    <string name="qr_title">اتصال به آیفون</string>
+    <string name="qr_subtitle">این کد QR را در اپلیکیشن OpenBridge آیفون اسکن کنید. کلید رمزنگاری فقط روی گوشی‌های خودتان می‌ماند.</string>
+    <string name="paired_badge">متصل به: %1$s</string>
+    <string name="not_paired_badge">هنوز جفت نشده</string>
+
+    <string name="permissions_title">وضعیت مجوزها</string>
+    <string name="permissions_all_ok">همه مجوزهای لازم تایید شده‌اند</string>
+    <string name="permissions_missing">برخی مجوزها هنوز داده نشده‌اند</string>
+
+    <string name="activity_empty">هنوز پیامک یا تماسی به آیفون منتقل نشده است.</string>
+    <string name="otp_label">کد تایید: %1$s</string>
+
+    <string name="language_title">زبان برنامه</string>
+    <string name="lang_system">پیش‌فرض سیستم</string>
+    <string name="lang_en">English</string>
+    <string name="lang_fa">فارسی</string>
+
+    <string name="notif_channel_name">سرویس OpenBridge</string>
+    <string name="notif_running_title">OpenBridge فعال است</string>
+    <string name="notif_running_connected">متصل و در حال همگام‌سازی با آیفون</string>
+    <string name="notif_running_waiting">در حال انتظار برای اتصال آیفون</string>
+    <string name="quick_sms_default">الان امکان صحبت ندارم، کمی بعد تماس می‌گیرم.</string>
+</resources>

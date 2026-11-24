@@ -1,0 +1,37 @@
+"app_name" = "OpenBridge";
+"tab_bridge" = "Bridge";
+"tab_messages" = "Messages";
+"tab_calls" = "Calls";
+"tab_debug" = "Debug";
+
+"status_connected" = "Connected";
+"status_scanning" = "Searching for Android...";
+"status_disconnected" = "Disconnected";
+"status_not_paired" = "Not Paired";
+
+"pair_qr_button" = "Scan Pairing QR Code";
+"paste_qr_button" = "Paste QR JSON";
+"reconnect_button" = "Reconnect";
+"unpair_button" = "Unpair Device";
+
+"battery_label" = "Battery";
+"signal_label" = "Signal";
+"operator_label" = "Carrier";
+
+"quick_dial_title" = "Dial via Android";
+"dial_placeholder" = "Enter phone number...";
+"dial_button" = "Call";
+
+"copy_otp" = "Copy OTP";
+"otp_copied" = "OTP Copied";
+"no_messages" = "No messages relayed yet.";
+"no_calls" = "No call events yet.";
+
+"reject_call" = "Reject";
+"silence_call" = "Silence";
+"reply_busy" = "Reply Busy SMS";
+"call_back" = "Call Back";
+
+"language_title" = "Language";
+"clear_logs" = "Clear";
+"copy_logs" = "Copy Logs";

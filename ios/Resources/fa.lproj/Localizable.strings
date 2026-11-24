@@ -1,0 +1,37 @@
+"app_name" = "OpenBridge";
+"tab_bridge" = "پل ارتباطی";
+"tab_messages" = "پیامک‌ها";
+"tab_calls" = "تماس‌ها";
+"tab_debug" = "لاگ و تنظیمات";
+
+"status_connected" = "متصل";
+"status_scanning" = "در جستجوی گوشی اندروید...";
+"status_disconnected" = "قطع شده";
+"status_not_paired" = "جفت نشده";
+
+"pair_qr_button" = "اسکن کد QR اندروید";
+"paste_qr_button" = "چسباندن متن QR";
+"reconnect_button" = "اتصال مجدد";
+"unpair_button" = "لغو جفت‌سازی";
+
+"battery_label" = "باتری";
+"signal_label" = "آنتن";
+"operator_label" = "اپراتور";
+
+"quick_dial_title" = "شماره‌گیری با اندروید";
+"dial_placeholder" = "شماره تلفن را وارد کنید...";
+"dial_button" = "تماس";
+
+"copy_otp" = "کپی کد";
+"otp_copied" = "کد کپی شد";
+"no_messages" = "هنوز پیامکی دریافت نشده است.";
+"no_calls" = "هنوز تماسی ثبت نشده است.";
+
+"reject_call" = "رد تماس";
+"silence_call" = "بی‌صدا کردن";
+"reply_busy" = "رد با پیامک";
+"call_back" = "تماس مجدد";
+
+"language_title" = "زبان برنامه";
+"clear_logs" = "پاک کردن";
+"copy_logs" = "کپی لاگ‌ها";
