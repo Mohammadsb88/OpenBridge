@@ -5,11 +5,11 @@ package org.openbridge.android.protocol
  */
 object OtpParser {
     private val KEYWORD_OTP_REGEX = Regex(
-        pattern = "(?:رمز\\s*(?:پویا|یکبار\\s*مصرف|ورود|تایید|تأیید)?|کد\\s*(?:تایید|تأیید|ورود|فعالسازی|فعال‌سازی)?|otp|code|pin|passcode|verification)[\\s:：\\-–]*([0-9]{4,8})",
+        pattern = "(?:رمز\\s*(?:پویا|یکبار\\s*مصرف|ورود|تایید|تأیید)?|کد\\s*(?:تایید|تأیید|ورود|فعالسازی|فعال‌سازی)?|otp|code|pin|passcode|verification)(?:\\s+(?:is|شما|عبارت\\s*است\\s*از))?[\\s:：\\-–]*([0-9]{4,8})",
         options = setOf(RegexOption.IGNORE_CASE)
     )
 
-    private val STANDALONE_CODE_REGEX = Regex("(?<![0-9/,\\.-])([0-9]{4,8})(?![0-9/,\\.-])")
+    private val STANDALONE_CODE_REGEX = Regex("(?<![0-9/,\\-]|(?:[0-9]\\.))([0-9]{4,8})(?![0-9/,\\-]|(?:\\.[0-9]))")
 
     private val NON_OTP_CONTEXT_REGEX = Regex(
         "(?:ریال|تومان|مانده|موجودی|مبلغ|واریز|برداشت|کارت|شبا|حساب|تلفن|تماس|IRR|TMN|Rial)",
