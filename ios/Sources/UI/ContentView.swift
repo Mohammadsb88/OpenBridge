@@ -134,38 +134,80 @@ private struct ActiveCallBanner: View {
                     .buttonStyle(.bordered)
                 }
             } else {
-                HStack(spacing: 10) {
-                    Button {
-                        bridge.toggleMute()
-                    } label: {
+                VStack(spacing: 8) {
+                    if bridge.voiceMode == .sip {
                         Label(
-                            bridge.isCallMuted ? (isPersian ? "باصدا" : "Unmute") : (isPersian ? "بی‌صدا" : "Mute"),
-                            systemImage: bridge.isCallMuted ? "mic.slash.fill" : "mic.fill"
+                            isPersian ? "صدای دوطرفه مستقیم SIP (کیفیت کامل حتی در کیف)" : "Full-Duplex SIP VoIP (Bag-Ready)",
+                            systemImage: "checkmark.shield.fill"
                         )
-                        .frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(.bordered)
-                    .tint(bridge.isCallMuted ? .orange : .obCyan)
-
-                    Button {
-                        bridge.toggleSpeaker()
-                    } label: {
+                        .font(.caption2)
+                        .foregroundStyle(Color.obCyan)
+                    } else if bridge.isAudioDirect {
                         Label(
-                            isPersian ? "اسپیکر" : "Speaker",
-                            systemImage: bridge.isSpeakerOn ? "speaker.wave.3.fill" : "speaker.wave.1.fill"
+                            isPersian ? "صدای مستقیم GSM فعال است (بدون اسپیکر)" : "Direct GSM Audio Active (\(bridge.audioPathDescription))",
+                            systemImage: "checkmark.seal.fill"
                         )
-                        .frame(maxWidth: .infinity)
+                        .font(.caption2)
+                        .foregroundStyle(Color.obGreen)
+                    } else if !bridge.audioPathDescription.isEmpty {
+                        Label(
+                            isPersian ? "فالبک میکروفون اندروید (برای داخل کیف، Root یا دایورت+SIP لازم است)" : "Mic Relay Fallback (Need Root or SIP for in-bag)",
+                            systemImage: "exclamationmark.triangle.fill"
+                        )
+                        .font(.caption2)
+                        .foregroundStyle(.orange)
                     }
-                    .buttonStyle(.bordered)
-                    .tint(bridge.isSpeakerOn ? .obCyan : .secondary)
 
-                    Button(role: .destructive) {
-                        bridge.endCurrentCall()
-                    } label: {
-                        Label(isPersian ? "قطع" : "End", systemImage: "phone.down.fill")
+                    HStack(spacing: 10) {
+                        Button {
+                            bridge.toggleMute()
+                        } label: {
+                            Label(
+                                bridge.isCallMuted ? (isPersian ? "باصدا" : "Unmute") : (isPersian ? "بی‌صدا" : "Mute"),
+                                systemImage: bridge.isCallMuted ? "mic.slash.fill" : "mic.fill"
+                            )
                             .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(.bordered)
+                        .tint(bridge.isCallMuted ? .orange : .obCyan)
+
+                        Button {
+                            bridge.toggleSpeaker()
+                        } label: {
+                            Label(
+                                isPersian ? "اسپیکر" : "Speaker",
+                                systemImage: bridge.isSpeakerOn ? "speaker.wave.3.fill" : "speaker.wave.1.fill"
+                            )
+                            .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(.bordered)
+                        .tint(bridge.isSpeakerOn ? .obCyan : .secondary)
+
+                        Button(role: .destructive) {
+                            bridge.endCurrentCall()
+                        } label: {
+                            Label(isPersian ? "قطع" : "End", systemImage: "phone.down.fill")
+                                .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(.borderedProminent)
                     }
-                    .buttonStyle(.borderedProminent)
+
+                    if !bridge.isAudioDirect && bridge.voiceMode != .sip {
+                        Button {
+                            bridge.toggleAndroidSpeaker()
+                        } label: {
+                            Label(
+                                bridge.androidSpeakerOn
+                                    ? (isPersian ? "اسپیکر اندروید: روشن" : "Android Speaker: ON")
+                                    : (isPersian ? "روشن کردن اسپیکر گوشی اندروید" : "Enable Android Speakerphone"),
+                                systemImage: bridge.androidSpeakerOn ? "speaker.wave.2.circle.fill" : "speaker.wave.2.circle"
+                            )
+                            .font(.caption)
+                            .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(.bordered)
+                        .tint(bridge.androidSpeakerOn ? .orange : .secondary)
+                    }
                 }
             }
         }
@@ -320,6 +362,36 @@ private struct BridgeHomeView: View {
                         .padding(12)
                         .background(Color.obCard)
                         .clipShape(RoundedRectangle(cornerRadius: 14))
+
+                        // Full Android Sync Card (Contacts, SMS History, Call Log)
+                        VStack(alignment: .leading, spacing: 10) {
+                            HStack {
+                                Label(isPersian ? "همگام‌سازی کامل گوشی اندروید" : "Android Full Sync", systemImage: "arrow.triangle.2.circlepath.circle.fill")
+                                    .font(.subheadline.weight(.semibold))
+                                    .foregroundStyle(Color.obCyan)
+                                Spacer()
+                                if bridge.isSyncing {
+                                    ProgressView().controlSize(.small)
+                                } else {
+                                    Button(isPersian ? "بروزرسانی" : "Sync Now") {
+                                        bridge.requestSync()
+                                    }
+                                    .buttonStyle(.bordered)
+                                    .controlSize(.small)
+                                }
+                            }
+                            HStack(spacing: 14) {
+                                Text(isPersian ? "مخاطبین: \(bridge.androidContacts.count)" : "Contacts: \(bridge.androidContacts.count)")
+                                Text(isPersian ? "پیامک‌ها: \(bridge.messages.count)" : "SMS: \(bridge.messages.count)")
+                                Text(isPersian ? "تماس‌ها: \(bridge.calls.count)" : "Calls: \(bridge.calls.count)")
+                            }
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        }
+                        .padding(14)
+                        .background(Color.obCard)
+                        .overlay(RoundedRectangle(cornerRadius: 16).stroke(Color.obBorder, lineWidth: 1))
+                        .clipShape(RoundedRectangle(cornerRadius: 16))
                     }
 
                     // Pairing Card
@@ -412,6 +484,7 @@ private struct DialerAndCallsView: View {
     let isPersian: Bool
     @State private var showContactPicker = false
     @State private var showHistory = false
+    @State private var showSimTools = false
 
     private let keys: [[(String, String)]] = [
         [("1", ""), ("2", "ABC"), ("3", "DEF")],
@@ -429,14 +502,24 @@ private struct DialerAndCallsView: View {
                             .padding(.horizontal, 16)
                     }
 
-                    // Mode indicator pill
-                    HStack {
+                    // Mode indicator + Actions row
+                    HStack(spacing: 8) {
                         Image(systemName: bridge.voiceMode == .sip ? "network" : "waveform")
                             .foregroundStyle(Color.obCyan)
                         Text(modeBadgeText)
                             .font(.caption.weight(.medium))
                             .foregroundStyle(.secondary)
+                            .lineLimit(1)
                         Spacer()
+                        Button {
+                            showSimTools = true
+                        } label: {
+                            Label(isPersian ? "USSD / دایورت" : "SIM / USSD", systemImage: "number.square")
+                                .font(.caption.weight(.semibold))
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+
                         Button {
                             showContactPicker = true
                         } label: {
@@ -447,6 +530,9 @@ private struct DialerAndCallsView: View {
                         .controlSize(.small)
                     }
                     .padding(.horizontal, 20)
+
+                    SimSelectorBar(isPersian: isPersian)
+                        .padding(.horizontal, 20)
 
                     // Dialed number display
                     Text(dialNumber.isEmpty ? (isPersian ? "شماره را وارد کنید" : "Enter Number") : dialNumber)
@@ -538,21 +624,30 @@ private struct DialerAndCallsView: View {
             .background(Color.obBg.ignoresSafeArea())
             .navigationTitle(isPersian ? "شماره‌گیر" : "Phone")
             .sheet(isPresented: $showContactPicker) {
-                ContactPickerView { number, name in
+                UnifiedContactsSheet(isPersian: isPersian) { number, name in
                     dialNumber = number
                     showContactPicker = false
                     bridge.log("Picked contact: \(name) (\(number))")
                 }
             }
+            .sheet(isPresented: $showSimTools) {
+                SimToolsSheet(isPersian: isPersian)
+            }
             .sheet(isPresented: $showHistory) {
                 NavigationStack {
                     List(bridge.calls) { call in
-                        HStack {
+                        HStack(spacing: 12) {
+                            Image(systemName: callIcon(call.state))
+                                .foregroundStyle(callColor(call.state))
                             VStack(alignment: .leading, spacing: 4) {
                                 Text(call.displayCaller).font(.headline)
-                                Text("\(call.state) • \(call.number)")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
+                                HStack(spacing: 6) {
+                                    Text(call.number)
+                                    Text("•")
+                                    Text(Date(timeIntervalSince1970: Double(call.ts) / 1000.0), style: .time)
+                                }
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
                             }
                             Spacer()
                             if !call.number.isEmpty {
@@ -570,9 +665,33 @@ private struct DialerAndCallsView: View {
                         ToolbarItem(placement: .cancellationAction) {
                             Button(isPersian ? "بستن" : "Close") { showHistory = false }
                         }
+                        ToolbarItem(placement: .topBarTrailing) {
+                            Button {
+                                bridge.requestSync()
+                            } label: {
+                                Image(systemName: "arrow.clockwise")
+                            }
+                        }
                     }
                 }
             }
+        }
+    }
+
+    private func callIcon(_ state: String) -> String {
+        switch state {
+        case "MISSED", "REJECTED": return "phone.arrow.down.left"
+        case "OUTGOING", "DIALING": return "phone.arrow.up.right"
+        default: return "phone.arrow.down.left.fill"
+        }
+    }
+
+    private func callColor(_ state: String) -> Color {
+        switch state {
+        case "MISSED": return .red
+        case "REJECTED": return .orange
+        case "OUTGOING", "DIALING": return .obGreen
+        default: return .obCyan
         }
     }
 
@@ -640,7 +759,12 @@ private struct MessagesView: View {
             .background(Color.obBg.ignoresSafeArea())
             .navigationTitle(isPersian ? "پیامک‌ها" : "Messages")
             .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
+                ToolbarItemGroup(placement: .topBarTrailing) {
+                    Button {
+                        bridge.requestSync()
+                    } label: {
+                        Image(systemName: "arrow.clockwise")
+                    }
                     Button {
                         composeRecipient = ""
                         composeContactName = ""
@@ -808,6 +932,20 @@ private struct SmsComposerSheet: View {
                     }
                 }
 
+                if let sims = bridge.deviceStatus?.sims, sims.count > 1 {
+                    Section(isPersian ? "انتخاب سیم‌کارت ارسال" : "Send From SIM") {
+                        Picker(isPersian ? "سیم‌کارت" : "SIM Card", selection: Binding(
+                            get: { bridge.selectedSubId ?? sims.first?.subId ?? 0 },
+                            set: { bridge.selectedSubId = $0 }
+                        )) {
+                            ForEach(sims) { sim in
+                                Text("SIM \(sim.slot + 1) • \(sim.name)").tag(sim.subId)
+                            }
+                        }
+                        .pickerStyle(.segmented)
+                    }
+                }
+
                 Section {
                     ZStack(alignment: .topLeading) {
                         if messageBody.isEmpty {
@@ -856,7 +994,7 @@ private struct SmsComposerSheet: View {
                 contactName = initialContactName
             }
             .sheet(isPresented: $showContacts) {
-                ContactPickerView { num, name in
+                UnifiedContactsSheet(isPersian: isPersian) { num, name in
                     recipient = num
                     contactName = name
                     showContacts = false
@@ -1004,6 +1142,248 @@ private struct SipSetupSheet: View {
                 username = bridge.sipConfig.username
                 password = bridge.sipConfig.password
             }
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button(isPersian ? "بستن" : "Close") { dismiss() }
+                }
+            }
+        }
+    }
+}
+
+private struct SimSelectorBar: View {
+    @EnvironmentObject var bridge: BridgeManager
+    let isPersian: Bool
+
+    var body: some View {
+        if let sims = bridge.deviceStatus?.sims, !sims.isEmpty {
+            HStack(spacing: 8) {
+                ForEach(sims) { sim in
+                    let isSelected = (bridge.selectedSubId ?? sims.first?.subId) == sim.subId
+                    Button {
+                        bridge.selectedSubId = sim.subId
+                    } label: {
+                        HStack(spacing: 5) {
+                            Image(systemName: "simcard.fill")
+                                .font(.caption2)
+                            Text("SIM \(sim.slot + 1) • \(sim.name)")
+                                .font(.caption.weight(.semibold))
+                                .lineLimit(1)
+                        }
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 6)
+                        .background(isSelected ? Color.obCyan.opacity(0.22) : Color.obCard)
+                        .foregroundStyle(isSelected ? Color.obCyan : .secondary)
+                        .overlay(
+                            Capsule().stroke(isSelected ? Color.obCyan : Color.obBorder, lineWidth: 1)
+                        )
+                        .clipShape(Capsule())
+                    }
+                    .buttonStyle(.plain)
+                }
+                Spacer()
+            }
+        }
+    }
+}
+
+private struct UnifiedContactsSheet: View {
+    @EnvironmentObject var bridge: BridgeManager
+    @Environment(\.dismiss) private var dismiss
+    let isPersian: Bool
+    let onSelect: (String, String) -> Void
+
+    @State private var searchText = ""
+    @State private var showIphonePicker = false
+
+    private var filtered: [AndroidContact] {
+        let q = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        if q.isEmpty { return bridge.androidContacts }
+        return bridge.androidContacts.filter {
+            $0.name.localizedCaseInsensitiveContains(q) || $0.number.contains(q)
+        }
+    }
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section {
+                    Button {
+                        showIphonePicker = true
+                    } label: {
+                        Label(
+                            isPersian ? "انتخاب از دفترچه تلفن آیفون" : "Pick from iPhone Contacts",
+                            systemImage: "person.crop.circle.badge.checkmark"
+                        )
+                        .foregroundStyle(Color.obCyan)
+                    }
+                }
+
+                Section(isPersian ? "مخاطبین سینک‌شده اندروید (\(bridge.androidContacts.count))" : "Synced Android Contacts (\(bridge.androidContacts.count))") {
+                    if filtered.isEmpty {
+                        HStack {
+                            Text(bridge.androidContacts.isEmpty
+                                 ? (isPersian ? "مخاطبی همگام‌سازی نشده؛ دکمه بروزرسانی را بزنید." : "No Android contacts synced yet.")
+                                 : (isPersian ? "موردی یافت نشد." : "No matches."))
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            Spacer()
+                            Button(isPersian ? "همگام‌سازی" : "Sync") {
+                                bridge.requestSync()
+                            }
+                            .buttonStyle(.bordered)
+                            .controlSize(.small)
+                        }
+                    } else {
+                        ForEach(filtered) { contact in
+                            Button {
+                                onSelect(contact.number, contact.name)
+                            } label: {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(contact.name)
+                                        .font(.body.weight(.medium))
+                                        .foregroundStyle(.primary)
+                                    Text(contact.number)
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            .searchable(text: $searchText, prompt: isPersian ? "جستجوی نام یا شماره..." : "Search name or number...")
+            .navigationTitle(isPersian ? "مخاطبین" : "Contacts")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button(isPersian ? "بستن" : "Close") { dismiss() }
+                }
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button {
+                        bridge.requestSync()
+                    } label: {
+                        Image(systemName: "arrow.clockwise")
+                    }
+                }
+            }
+            .sheet(isPresented: $showIphonePicker) {
+                ContactPickerView { num, name in
+                    showIphonePicker = false
+                    onSelect(num, name)
+                }
+            }
+        }
+    }
+}
+
+private struct SimToolsSheet: View {
+    @EnvironmentObject var bridge: BridgeManager
+    @Environment(\.dismiss) private var dismiss
+    let isPersian: Bool
+
+    @State private var ussdCode = "*140#"
+    @State private var forwardTarget = ""
+
+    private let quickCodes: [(String, String, String)] = [
+        ("*140#", "شارژ / موجودی", "Balance"),
+        ("*100#", "بسته اینترنت", "Internet"),
+        ("*555*1*2#", "ایرانسل (باقی‌مانده)", "Irancell"),
+        ("*10*11#", "همراه اول (وضعیت)", "MCI Info")
+    ]
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                if let sims = bridge.deviceStatus?.sims, sims.count > 1 {
+                    Section(isPersian ? "سیم‌کارت فعال" : "Active SIM") {
+                        Picker(isPersian ? "سیم‌کارت" : "SIM Card", selection: Binding(
+                            get: { bridge.selectedSubId ?? sims.first?.subId ?? 0 },
+                            set: { bridge.selectedSubId = $0 }
+                        )) {
+                            ForEach(sims) { sim in
+                                Text("SIM \(sim.slot + 1) • \(sim.name)").tag(sim.subId)
+                            }
+                        }
+                        .pickerStyle(.segmented)
+                    }
+                }
+
+                Section(isPersian ? "اجرای کدهای دستوری (USSD)" : "Run USSD Code") {
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 8) {
+                            ForEach(quickCodes, id: \.0) { code, faLabel, enLabel in
+                                Button {
+                                    ussdCode = code
+                                    bridge.runUssd(code: code)
+                                } label: {
+                                    Text("\(code) • \(isPersian ? faLabel : enLabel)")
+                                        .font(.caption.weight(.semibold))
+                                }
+                                .buttonStyle(.bordered)
+                                .controlSize(.small)
+                            }
+                        }
+                        .padding(.vertical, 2)
+                    }
+
+                    HStack {
+                        TextField("*140#", text: $ussdCode)
+                            .keyboardType(.phonePad)
+                        Button(isPersian ? "اجرا" : "Run") {
+                            bridge.runUssd(code: ussdCode)
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(ussdCode.trimmingCharacters(in: .whitespaces).isEmpty || bridge.connectionStatus != .connected)
+                    }
+
+                    if bridge.isUssdRunning {
+                        HStack(spacing: 8) {
+                            ProgressView()
+                            Text(isPersian ? "در حال دریافت پاسخ از اپراتور..." : "Waiting for carrier USSD reply...")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    } else if let res = bridge.lastUssdResult {
+                        VStack(alignment: .leading, spacing: 6) {
+                            HStack {
+                                Text(res.code).font(.caption.bold())
+                                Spacer()
+                                Image(systemName: res.success ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+                                    .foregroundStyle(res.success ? Color.obGreen : .orange)
+                            }
+                            Text(res.message)
+                                .font(.subheadline)
+                                .textSelection(.enabled)
+                        }
+                        .padding(.vertical, 4)
+                    }
+                }
+
+                Section {
+                    TextField(isPersian ? "شماره مقصد یا خط SIP/تلفن" : "Forward target number", text: $forwardTarget)
+                        .keyboardType(.phonePad)
+                    HStack {
+                        Button(isPersian ? "فعال‌سازی دایورت (*21*)" : "Enable Forward (*21*)") {
+                            bridge.setRemoteCallForwarding(enable: true, target: forwardTarget)
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(forwardTarget.trimmingCharacters(in: .whitespaces).isEmpty || bridge.connectionStatus != .connected)
+
+                        Button(isPersian ? "لغو دایورت (#21#)" : "Disable (#21#)") {
+                            bridge.setRemoteCallForwarding(enable: false, target: "")
+                        }
+                        .buttonStyle(.bordered)
+                        .disabled(bridge.connectionStatus != .connected)
+                    }
+                } header: {
+                    Text(isPersian ? "دایورت تماس از راه دور (*21*)" : "Remote Call Forwarding (*21*)")
+                } footer: {
+                    Text(isPersian
+                         ? "برای مکالمه کاملاً شفاف بدون بیرون آوردن گوشی اندروید از کیف، تماس‌ها را روی شماره SIP خود دایورت کنید."
+                         : "Forward cellular calls to your SIP virtual number for crystal-clear in-bag audio.")
+                }
+            }
+            .navigationTitle(isPersian ? "ابزار سیم‌کارت و USSD" : "SIM & USSD Tools")
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button(isPersian ? "بستن" : "Close") { dismiss() }

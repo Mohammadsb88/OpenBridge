@@ -1,7 +1,9 @@
 package org.openbridge.android.audio
 
 import android.annotation.SuppressLint
+import android.content.ComponentName
 import android.content.Context
+import android.content.ServiceConnection
 import android.media.AudioAttributes
 import android.media.AudioDeviceInfo
 import android.media.AudioFormat
@@ -10,6 +12,7 @@ import android.media.AudioRecord
 import android.media.AudioTrack
 import android.media.MediaRecorder
 import android.os.Build
+import android.os.IBinder
 import android.os.PowerManager
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -19,6 +22,8 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import org.openbridge.android.data.BridgeStore
 import org.openbridge.android.protocol.BridgeConstants
+import org.openbridge.android.protocol.BridgeModels
+import org.openbridge.android.service.BridgeRuntime
 import rikka.shizuku.Shizuku
 import java.io.ByteArrayOutputStream
 import java.io.InputStream
@@ -27,16 +32,16 @@ import java.net.Inet4Address
 import java.net.NetworkInterface
 import java.net.ServerSocket
 import java.net.Socket
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import kotlin.math.abs
 import kotlin.math.sqrt
 
 /**
  * Full-duplex 16kHz 16-bit mono PCM audio relay over Local Hotspot / Wi-Fi (port 54810).
- * Features:
- * - Preserves cellular MODE_IN_CALL on Android 14 / HyperOS
- * - Probes direct VOICE_CALL / VOICE_DOWNLINK when Shizuku / Root is available
- * - Auto-routes speakerphone + software echo suppression + gain limiting in acoustic fallback mode
- * - Even-byte frame accumulator so Int16 samples never misalign across TCP chunks
+ * - Tries Shizuku UserService (privileged UID) when enabled for direct VOICE_CALL capture without speaker
+ * - Probes direct VOICE_CALL / VOICE_DOWNLINK on rooted ROMs
+ * - Preserves cellular MODE_IN_CALL, with optional speaker + software echo suppression fallback
  */
 class LocalAudioRelayServer(private val context: Context) {
     companion object {
@@ -104,7 +109,30 @@ class LocalAudioRelayServer(private val context: Context) {
     private var lastDownlinkPeakMs: Long = 0L
 
     @Volatile
-    private var downlinkRms: Double = 0.0
+    private var privService: IPrivilegedAudioService? = null
+
+    private var privLatch: CountDownLatch? = null
+
+    private val privConnection = object : ServiceConnection {
+        override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
+            privService = IPrivilegedAudioService.Stub.asInterface(service)
+            privLatch?.countDown()
+        }
+
+        override fun onServiceDisconnected(name: ComponentName?) {
+            privService = null
+        }
+    }
+
+    private val userServiceArgs by lazy {
+        Shizuku.UserServiceArgs(
+            ComponentName(context.packageName, PrivilegedAudioService::class.java.name)
+        )
+            .daemon(false)
+            .processNameSuffix("audio_priv")
+            .debuggable(false)
+            .version(4)
+    }
 
     @Synchronized
     fun startListening() {
@@ -134,6 +162,7 @@ class LocalAudioRelayServer(private val context: Context) {
     @Synchronized
     fun stop() {
         isMuted = false
+        runCatching { privService?.stopAudioCapture() }
         runCatching { activeClient?.close() }
         activeClient = null
         runCatching { serverSocket?.close() }
@@ -155,6 +184,24 @@ class LocalAudioRelayServer(private val context: Context) {
         val am = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
         applySpeakerRouting(am, enabled)
         BridgeStore.log("Speakerphone=$enabled")
+    }
+
+    private fun tryStartShizukuCapturePort(): Pair<Int, String> {
+        if (!isShizukuReady()) return -1 to "Shizuku not ready"
+        return try {
+            if (privService == null) {
+                val latch = CountDownLatch(1)
+                privLatch = latch
+                Shizuku.bindUserService(userServiceArgs, privConnection)
+                latch.await(3, TimeUnit.SECONDS)
+            }
+            val svc = privService ?: return -1 to "Shizuku UserService timeout"
+            val port = svc.startAudioCapture()
+            val status = runCatching { svc.captureStatus }.getOrDefault("unknown")
+            port to status
+        } catch (t: Throwable) {
+            -1 to "Shizuku bind error: ${t.message}"
+        }
     }
 
     private fun applySpeakerRouting(am: AudioManager, enable: Boolean) {
@@ -179,7 +226,7 @@ class LocalAudioRelayServer(private val context: Context) {
     }
 
     @SuppressLint("MissingPermission")
-    private fun createBestRecorder(minBuf: Int, tryPrivileged: Boolean): Pair<AudioRecord, Boolean> {
+    private fun createBestLocalRecorder(minBuf: Int, tryPrivileged: Boolean): Pair<AudioRecord, Boolean> {
         val candidates = if (tryPrivileged) {
             listOf(
                 MediaRecorder.AudioSource.VOICE_CALL to true,
@@ -232,28 +279,78 @@ class LocalAudioRelayServer(private val context: Context) {
 
         var recorder: AudioRecord? = null
         var player: AudioTrack? = null
+        var privSocket: Socket? = null
 
         try {
             wakeLock.acquire(60 * 60 * 1000L)
             socket.tcpNoDelay = true
 
-            // CRITICAL: Only move out of MODE_NORMAL; NEVER clobber MODE_IN_CALL during an active GSM call.
+            val voiceMode = BridgeStore.voiceMode.value
+
+            // 1. Try Shizuku Privileged UserService first if enabled (zero speakerphone!)
+            if (voiceMode == "shizuku" && isShizukuReady()) {
+                val (privPort, privStatus) = tryStartShizukuCapturePort()
+                BridgeStore.log("Shizuku audio probe: port=$privPort status=$privStatus")
+                if (privPort > 0) {
+                    BridgeRuntime.sendToIphone(BridgeModels.audioStatusJson(direct = true, source = privStatus))
+                    val ps = Socket("127.0.0.1", privPort).apply { tcpNoDelay = true }
+                    privSocket = ps
+                    val netToPriv = scope.launch {
+                        val buf = ByteArray(1024)
+                        val inp = socket.getInputStream()
+                        val out = ps.getOutputStream()
+                        while (isActive && !socket.isClosed && !ps.isClosed) {
+                            val r = inp.read(buf)
+                            if (r <= 0) break
+                            if (!isMuted) {
+                                out.write(buf, 0, r)
+                                out.flush()
+                            }
+                        }
+                    }
+                    val privToNet = scope.launch {
+                        val buf = ByteArray(CHUNK_BYTES)
+                        val inp = ps.getInputStream()
+                        val out = socket.getOutputStream()
+                        while (isActive && !socket.isClosed && !ps.isClosed) {
+                            val r = inp.read(buf)
+                            if (r <= 0) break
+                            out.write(buf, 0, r)
+                            out.flush()
+                        }
+                    }
+                    while (!socket.isClosed && !ps.isClosed && netToPriv.isActive && privToNet.isActive) {
+                        Thread.sleep(150)
+                    }
+                    netToPriv.cancel()
+                    privToNet.cancel()
+                    return
+                } else {
+                    BridgeRuntime.sendToIphone(BridgeModels.audioStatusJson(direct = false, source = privStatus))
+                }
+            }
+
+            // 2. Fallback to local AudioRecord / AudioTrack (preserving MODE_IN_CALL!)
             if (prevMode == AudioManager.MODE_NORMAL) {
                 am.mode = AudioManager.MODE_IN_COMMUNICATION
             }
 
-            val voiceMode = BridgeStore.voiceMode.value
-            val tryPrivileged = (voiceMode == "shizuku" && isShizukuReady()) ||
-                (voiceMode == "root" && isRootAvailable())
-
+            val tryPrivileged = (voiceMode == "root" && isRootAvailable())
             val minRecBuf = AudioRecord.getMinBufferSize(
                 SAMPLE_RATE,
                 AudioFormat.CHANNEL_IN_MONO,
                 AudioFormat.ENCODING_PCM_16BIT
             ).coerceAtLeast(CHUNK_BYTES * 6)
 
-            val (rec, isDirectVoiceCall) = createBestRecorder(minRecBuf, tryPrivileged)
+            val (rec, isDirectVoiceCall) = createBestLocalRecorder(minRecBuf, tryPrivileged)
             recorder = rec
+
+            BridgeRuntime.sendToIphone(
+                BridgeModels.audioStatusJson(
+                    direct = isDirectVoiceCall,
+                    source = if (isDirectVoiceCall) "VOICE_CALL (Direct)" else "Acoustic Mic Fallback (No Root)"
+                )
+            )
 
             if (!isDirectVoiceCall && BridgeStore.autoSpeaker.value) {
                 applySpeakerRouting(am, true)
@@ -296,7 +393,6 @@ class LocalAudioRelayServer(private val context: Context) {
             val input: InputStream = socket.getInputStream()
             val output: OutputStream = socket.getOutputStream()
 
-            // Uplink: Android -> iPhone (Mic or Direct Voice Call -> Socket)
             val txJob = scope.launch {
                 val buf = ByteArray(CHUNK_BYTES)
                 while (isActive && !socket.isClosed) {
@@ -314,7 +410,6 @@ class LocalAudioRelayServer(private val context: Context) {
                 }
             }
 
-            // Downlink: iPhone -> Android Speaker/AudioTrack (with even-byte accumulator)
             val rxJob = scope.launch {
                 val netBuf = ByteArray(2048)
                 val leftover = ByteArrayOutputStream()
@@ -345,6 +440,8 @@ class LocalAudioRelayServer(private val context: Context) {
         } catch (e: Exception) {
             BridgeStore.log("Audio stream ended: ${e.message}")
         } finally {
+            runCatching { privSocket?.close() }
+            runCatching { privService?.stopAudioCapture() }
             runCatching { recorder?.stop() }
             runCatching { recorder?.release() }
             runCatching { player?.stop() }
@@ -369,7 +466,6 @@ class LocalAudioRelayServer(private val context: Context) {
             val lo = buf[idx].toInt() and 0xFF
             val hi = buf[idx + 1].toInt()
             var sample = ((hi shl 8) or lo).toShort().toInt()
-            // Gentle gain boost for clear playback on Android speakerphone
             sample = (sample * 1.45).toInt().coerceIn(-32768, 32767)
             buf[idx] = (sample and 0xFF).toByte()
             buf[idx + 1] = ((sample shr 8) and 0xFF).toByte()
@@ -378,7 +474,6 @@ class LocalAudioRelayServer(private val context: Context) {
         }
         if (count > 0) {
             val rms = sqrt(sumSq / count)
-            downlinkRms = rms
             if (rms > 650.0) {
                 lastDownlinkPeakMs = System.currentTimeMillis()
             }
@@ -390,8 +485,8 @@ class LocalAudioRelayServer(private val context: Context) {
         val activelyPlayingRemote = suppressEcho && (now - lastDownlinkPeakMs < 240L)
         val gain = when {
             isMuted -> 0.0
-            activelyPlayingRemote -> 0.16 // Half-duplex echo ducking while iPhone speaks
-            else -> 1.55 // Crisp voice boost toward iPhone
+            activelyPlayingRemote -> 0.16
+            else -> 1.55
         }
 
         var idx = 0
@@ -400,7 +495,6 @@ class LocalAudioRelayServer(private val context: Context) {
             val hi = buf[idx + 1].toInt()
             val sample = ((hi shl 8) or lo).toShort().toInt()
             val scaled = if (isMuted) 0 else (sample * gain).toInt().coerceIn(-32768, 32767)
-            // Tiny noise gate in muted/quiet echo states
             val out = if (activelyPlayingRemote && abs(scaled) < 120) 0 else scaled
             buf[idx] = (out and 0xFF).toByte()
             buf[idx + 1] = ((out shr 8) and 0xFF).toByte()

@@ -24,6 +24,14 @@ final class BridgeManager: NSObject, ObservableObject {
     @Published var audioLinkState: LocalAudioState = .idle
     @Published var isCallMuted: Bool = false
     @Published var isSpeakerOn: Bool = false
+    @Published var androidContacts: [AndroidContact] = []
+    @Published var selectedSubId: Int?
+    @Published var lastUssdResult: UssdResponse?
+    @Published var isUssdRunning: Bool = false
+    @Published var audioPathDescription: String = ""
+    @Published var isAudioDirect: Bool = false
+    @Published var isSyncing: Bool = false
+    @Published var androidSpeakerOn: Bool = false
 
     @Published var appLanguage: String {
         didSet {
@@ -64,6 +72,7 @@ final class BridgeManager: NSObject, ObservableObject {
     private let sipClient = SipClient()
     private let callKit = CallKitManager.shared
     private var isSipCallActive = false
+    private var hasPerformedInitialSync = false
 
     private let timeFormatter: DateFormatter = {
         let f = DateFormatter()
@@ -261,6 +270,9 @@ final class BridgeManager: NSObject, ObservableObject {
                 sendCallAction(action: "REJECT", number: num)
             }
             activeCall = nil
+            audioPathDescription = ""
+            isAudioDirect = false
+            androidSpeakerOn = false
         }
     }
 
@@ -284,6 +296,16 @@ final class BridgeManager: NSObject, ObservableObject {
         let next = !isSpeakerOn
         isSpeakerOn = next
         localAudio.setSpeakerEnabled(next)
+    }
+
+    func toggleAndroidSpeaker() {
+        let next = !androidSpeakerOn
+        androidSpeakerOn = next
+        sendEncryptedDict([
+            "type": "CALL_ACTION",
+            "action": next ? "SPEAKER_ON" : "SPEAKER_OFF",
+            "number": activeCall?.number ?? ""
+        ])
     }
 
     func sendDtmfIfInSipCall(_ digit: String) {
@@ -310,16 +332,66 @@ final class BridgeManager: NSObject, ObservableObject {
             errorDetail: nil
         )
         messages.insert(outgoing, at: 0)
-        if messages.count > 150 { messages.removeLast() }
+        if messages.count > 200 { messages.removeLast() }
 
-        let dict: [String: Any] = [
+        var dict: [String: Any] = [
             "type": "SEND_SMS",
             "id": id,
             "recipient": cleanRecipient,
             "body": cleanBody
         ]
+        if let subId = selectedSubId {
+            dict["subId"] = subId
+        }
         sendEncryptedDict(dict)
         log("Dispatched SEND_SMS to \(cleanRecipient)")
+    }
+
+    func requestSync(scope: String = "all") {
+        guard connectionStatus == .connected else { return }
+        isSyncing = true
+        sendEncryptedDict([
+            "type": "SYNC_REQUEST",
+            "scope": scope
+        ])
+        log("Requested sync (\(scope)) from Android")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) { [weak self] in
+            self?.isSyncing = false
+        }
+    }
+
+    func runUssd(code: String) {
+        let clean = code.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !clean.isEmpty else { return }
+        isUssdRunning = true
+        lastUssdResult = nil
+        var dict: [String: Any] = [
+            "type": "RUN_USSD",
+            "code": clean
+        ]
+        if let subId = selectedSubId {
+            dict["subId"] = subId
+        }
+        sendEncryptedDict(dict)
+        log("Sent RUN_USSD \(clean)")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 18.0) { [weak self] in
+            self?.isUssdRunning = false
+        }
+    }
+
+    func setRemoteCallForwarding(enable: Bool, target: String) {
+        let cleanTarget = target.trimmingCharacters(in: .whitespacesAndNewlines)
+        if enable && cleanTarget.isEmpty { return }
+        var dict: [String: Any] = [
+            "type": "CALL_FORWARD",
+            "enable": enable,
+            "target": cleanTarget
+        ]
+        if let subId = selectedSubId {
+            dict["subId"] = subId
+        }
+        sendEncryptedDict(dict)
+        log("Sent CALL_FORWARD enable=\(enable) target=\(cleanTarget)")
     }
 
     private func startLocalAudioIfAvailable() {
@@ -436,6 +508,15 @@ final class BridgeManager: NSObject, ObservableObject {
         pendingPairHello = nil
         pairedAndroidName = ""
         deviceStatus = nil
+        androidContacts = []
+        selectedSubId = nil
+        lastUssdResult = nil
+        isUssdRunning = false
+        audioPathDescription = ""
+        isAudioDirect = false
+        isSyncing = false
+        androidSpeakerOn = false
+        hasPerformedInitialSync = false
         connectedPeripheral = nil
         rxCharacteristic = nil
         txCharacteristic = nil
@@ -446,11 +527,14 @@ final class BridgeManager: NSObject, ObservableObject {
     func sendDialRequest(number: String) {
         let trimmed = number.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
-        let dict: [String: Any] = [
+        var dict: [String: Any] = [
             "type": "DIAL_REQUEST",
             "number": trimmed,
             "mode": voiceMode.rawValue
         ]
+        if let subId = selectedSubId {
+            dict["subId"] = subId
+        }
         sendEncryptedDict(dict)
         log("Sent DIAL_REQUEST to \(trimmed)")
     }
@@ -566,18 +650,71 @@ final class BridgeManager: NSObject, ObservableObject {
                     UserDefaults.standard.set(name, forKey: Self.peerNameKey)
                 }
                 self.log("Received PAIR_ACK — E2EE verified!")
+                if !self.hasPerformedInitialSync {
+                    self.hasPerformedInitialSync = true
+                    self.requestSync()
+                }
             case "PONG":
                 self.log("Received PONG")
+                if !self.hasPerformedInitialSync {
+                    self.hasPerformedInitialSync = true
+                    self.requestSync()
+                }
             case "DEVICE_STATUS":
                 if let status = try? JSONDecoder().decode(DeviceStatus.self, from: plain) {
                     self.deviceStatus = status
+                    if let sims = status.sims, !sims.isEmpty {
+                        if self.selectedSubId == nil || !sims.contains(where: { $0.subId == self.selectedSubId }) {
+                            self.selectedSubId = sims.first?.subId
+                        }
+                    }
                 }
             case "SMS_RECEIVED":
                 if let sms = try? JSONDecoder().decode(RelayedSms.self, from: plain) {
-                    self.messages.insert(sms, at: 0)
-                    if self.messages.count > 150 { self.messages.removeLast() }
+                    if !self.messages.contains(where: { $0.id == sms.id }) {
+                        self.messages.insert(sms, at: 0)
+                        if self.messages.count > 200 { self.messages.removeLast() }
+                    }
                     NotificationManager.shared.notifySms(sms)
                     self.log("SMS from \(sms.displaySender) (OTP=\(sms.otp.isEmpty ? "none" : sms.otp))")
+                }
+            case "SMS_HISTORY":
+                if let batch = try? JSONDecoder().decode(SmsHistoryBatch.self, from: plain) {
+                    var existing = Dictionary(uniqueKeysWithValues: self.messages.map { ($0.id, $0) })
+                    for item in batch.items where existing[item.id] == nil {
+                        existing[item.id] = item
+                    }
+                    self.messages = Array(existing.values.sorted { $0.ts > $1.ts }.prefix(200))
+                }
+            case "CALL_HISTORY":
+                if let batch = try? JSONDecoder().decode(CallHistoryBatch.self, from: plain) {
+                    var existing = Dictionary(uniqueKeysWithValues: self.calls.map { ($0.id, $0) })
+                    for item in batch.items where existing[item.id] == nil {
+                        existing[item.id] = item
+                    }
+                    self.calls = Array(existing.values.sorted { $0.ts > $1.ts }.prefix(150))
+                }
+            case "CONTACTS_SYNC":
+                if let batch = try? JSONDecoder().decode(ContactsSyncBatch.self, from: plain) {
+                    var existing = Dictionary(uniqueKeysWithValues: self.androidContacts.map { ($0.id, $0) })
+                    for c in batch.items {
+                        existing[c.id] = c
+                    }
+                    self.androidContacts = existing.values.sorted {
+                        $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+                    }
+                }
+            case "USSD_RESPONSE":
+                if let resp = try? JSONDecoder().decode(UssdResponse.self, from: plain) {
+                    self.lastUssdResult = resp
+                    self.isUssdRunning = false
+                    self.log("USSD \(resp.code): \(resp.message)")
+                }
+            case "AUDIO_STATUS":
+                if let info = try? JSONDecoder().decode(AudioStatusInfo.self, from: plain) {
+                    self.isAudioDirect = info.direct
+                    self.audioPathDescription = info.source
+                    self.log("Audio path: direct=\(info.direct) (\(info.source))")
                 }
             case "SMS_SENT":
                 if let ack = try? JSONDecoder().decode(SmsSentAck.self, from: plain) {
@@ -601,6 +738,9 @@ final class BridgeManager: NSObject, ObservableObject {
                     } else if call.state == "IDLE" {
                         if !self.isSipCallActive {
                             self.activeCall = nil
+                            self.audioPathDescription = ""
+                            self.isAudioDirect = false
+                            self.androidSpeakerOn = false
                             self.localAudio.stop()
                             self.callKit.reportRemoteEnded()
                         }
@@ -690,6 +830,7 @@ extension BridgeManager: CBCentralManagerDelegate {
     func centralManager(_ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral, error: Error?) {
         rxCharacteristic = nil
         txCharacteristic = nil
+        hasPerformedInitialSync = false
         decoder.reset()
         localAudio.stop()
         if sharedKey != nil {

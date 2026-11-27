@@ -18,9 +18,16 @@ import android.net.Uri
 import android.os.BatteryManager
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
 import android.os.IBinder
+import android.os.Looper
+import android.provider.CallLog
+import android.provider.ContactsContract
+import android.provider.Telephony
+import android.telecom.PhoneAccountHandle
 import android.telecom.TelecomManager
 import android.telephony.SmsManager
+import android.telephony.SubscriptionManager
 import android.telephony.TelephonyManager
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
@@ -32,6 +39,7 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import org.json.JSONArray
 import org.json.JSONObject
 import org.openbridge.android.MainActivity
 import org.openbridge.android.R
@@ -42,6 +50,7 @@ import org.openbridge.android.data.BridgeStore
 import org.openbridge.android.data.RelayedEvent
 import org.openbridge.android.protocol.BridgeConstants
 import org.openbridge.android.protocol.BridgeModels
+import org.openbridge.android.protocol.OtpParser
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 
@@ -284,6 +293,28 @@ class BridgeForegroundService : Service() {
         nm.notify(NOTIF_ID, buildNotification())
     }
 
+    @SuppressLint("MissingPermission")
+    private fun getActiveSimsJson(): JSONArray {
+        val arr = JSONArray()
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.READ_PHONE_STATE) != PackageManager.PERMISSION_GRANTED) {
+            return arr
+        }
+        try {
+            val sm = getSystemService(Context.TELEPHONY_SUBSCRIPTION_SERVICE) as SubscriptionManager
+            val list = sm.activeSubscriptionInfoList.orEmpty()
+            for (info in list) {
+                arr.put(
+                    JSONObject()
+                        .put("slot", info.simSlotIndex)
+                        .put("subId", info.subscriptionId)
+                        .put("name", (info.displayName ?: info.carrierName ?: "SIM ${info.simSlotIndex + 1}").toString())
+                )
+            }
+        } catch (_: Exception) {
+        }
+        return arr
+    }
+
     private fun pushDeviceStatus() {
         val bm = getSystemService(Context.BATTERY_SERVICE) as BatteryManager
         val battery = bm.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY).coerceIn(0, 100)
@@ -309,7 +340,8 @@ class BridgeForegroundService : Service() {
             signal = signal,
             networkType = "Cellular",
             operatorName = operatorName,
-            wifiIp = wifiIp
+            wifiIp = wifiIp,
+            sims = getActiveSimsJson()
         )
         BridgeRuntime.sendToIphone(payload)
     }
@@ -321,9 +353,266 @@ class BridgeForegroundService : Service() {
                 pushDeviceStatus()
             }
             "CALL_ACTION" -> handleCallAction(cmd)
-            "DIAL_REQUEST" -> handleDialRequest(cmd.optString("number", ""))
+            "DIAL_REQUEST" -> handleDialRequest(
+                number = cmd.optString("number", ""),
+                subId = cmd.optInt("subId", -1).takeIf { it > 0 }
+            )
             "SEND_SMS" -> handleSendSmsRequest(cmd)
+            "RUN_USSD" -> handleUssdRequest(
+                code = cmd.optString("code", ""),
+                subId = cmd.optInt("subId", -1).takeIf { it > 0 }
+            )
+            "CALL_FORWARD" -> {
+                val enable = cmd.optBoolean("enable", true)
+                val target = cmd.optString("target", "").trim()
+                val subId = cmd.optInt("subId", -1).takeIf { it > 0 }
+                val ussd = if (enable) {
+                    if (target.isBlank()) return
+                    "*21*$target#"
+                } else {
+                    "#21#"
+                }
+                handleDialRequest(ussd, subId)
+            }
+            "SYNC_REQUEST" -> serviceScope.launch(Dispatchers.IO) {
+                performHistoryAndContactsSync()
+            }
             else -> BridgeStore.log("Unknown command from iOS: ${cmd.optString("type")}")
+        }
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun handleUssdRequest(code: String, subId: Int?) {
+        val clean = code.trim()
+        if (clean.isBlank()) return
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.CALL_PHONE) != PackageManager.PERMISSION_GRANTED) {
+            BridgeRuntime.sendToIphone(
+                BridgeModels.ussdResponseJson(clean, false, "Missing CALL_PHONE permission on Android")
+            )
+            return
+        }
+        try {
+            val baseTm = getSystemService(Context.TELEPHONY_SERVICE) as TelephonyManager
+            val tm = if (subId != null) baseTm.createForSubscriptionId(subId) else baseTm
+            tm.sendUssdRequest(
+                clean,
+                object : TelephonyManager.UssdResponseCallback() {
+                    override fun onReceiveUssdResponse(
+                        telephonyManager: TelephonyManager,
+                        request: String,
+                        response: CharSequence
+                    ) {
+                        val text = response.toString()
+                        BridgeRuntime.sendToIphone(BridgeModels.ussdResponseJson(request, true, text))
+                        BridgeStore.log("USSD $request -> $text")
+                    }
+
+                    override fun onReceiveUssdResponseFailed(
+                        telephonyManager: TelephonyManager,
+                        request: String,
+                        failureCode: Int
+                    ) {
+                        // Some carriers reject silent USSD API for MMI codes; try Telecom placeCall fallback if failureCode
+                        BridgeRuntime.sendToIphone(
+                            BridgeModels.ussdResponseJson(
+                                request,
+                                false,
+                                "USSD code error ($failureCode). If this is a forwarding MMI, use Call Forward button."
+                            )
+                        )
+                        BridgeStore.log("USSD $request failed code=$failureCode")
+                    }
+                },
+                Handler(Looper.getMainLooper())
+            )
+        } catch (e: Exception) {
+            BridgeRuntime.sendToIphone(
+                BridgeModels.ussdResponseJson(clean, false, e.message ?: "USSD error")
+            )
+        }
+    }
+
+    private fun performHistoryAndContactsSync() {
+        BridgeStore.log("Syncing SMS Inbox, Call Log, and Contacts to iPhone...")
+        syncRecentSms()
+        syncRecentCallLog()
+        syncContacts()
+    }
+
+    private fun syncRecentSms() {
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.READ_SMS) != PackageManager.PERMISSION_GRANTED) {
+            return
+        }
+        try {
+            val items = JSONArray()
+            contentResolver.query(
+                Telephony.Sms.CONTENT_URI,
+                arrayOf("_id", "address", "body", "date", "type"),
+                null,
+                null,
+                "date DESC LIMIT 35"
+            )?.use { c ->
+                val idxId = c.getColumnIndexOrThrow("_id")
+                val idxAddr = c.getColumnIndexOrThrow("address")
+                val idxBody = c.getColumnIndexOrThrow("body")
+                val idxDate = c.getColumnIndexOrThrow("date")
+                val idxType = c.getColumnIndexOrThrow("type")
+                while (c.moveToNext()) {
+                    val id = "sync-sms-${c.getString(idxId)}"
+                    val addr = c.getString(idxAddr) ?: ""
+                    val body = c.getString(idxBody) ?: ""
+                    val ts = c.getLong(idxDate)
+                    val type = c.getInt(idxType) // 1 = inbox, 2 = sent
+                    val name = if (addr.isNotBlank()) lookupContactName(addr) else null
+                    val otp = if (type == 1) (OtpParser.extractOtp(body) ?: "") else ""
+                    items.put(
+                        JSONObject()
+                            .put("id", id)
+                            .put("sender", addr)
+                            .put("contactName", name ?: "")
+                            .put("body", body)
+                            .put("otp", otp)
+                            .put("ts", ts)
+                            .put("isOutgoing", type == 2)
+                            .put("deliveryStatus", if (type == 2) "sent" else JSONObject.NULL)
+                    )
+                    if (items.length() >= 10) {
+                        BridgeRuntime.sendToIphone(
+                            JSONObject().put("type", "SMS_HISTORY").put("items", items).toString()
+                        )
+                        while (items.length() > 0) items.remove(0)
+                        Thread.sleep(60)
+                    }
+                }
+            }
+            if (items.length() > 0) {
+                BridgeRuntime.sendToIphone(
+                    JSONObject().put("type", "SMS_HISTORY").put("items", items).toString()
+                )
+            }
+        } catch (e: Exception) {
+            BridgeStore.log("SMS history sync error: ${e.message}")
+        }
+    }
+
+    private fun syncRecentCallLog() {
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.READ_CALL_LOG) != PackageManager.PERMISSION_GRANTED) {
+            return
+        }
+        try {
+            val items = JSONArray()
+            contentResolver.query(
+                CallLog.Calls.CONTENT_URI,
+                arrayOf(
+                    CallLog.Calls._ID,
+                    CallLog.Calls.NUMBER,
+                    CallLog.Calls.CACHED_NAME,
+                    CallLog.Calls.TYPE,
+                    CallLog.Calls.DATE
+                ),
+                null,
+                null,
+                "${CallLog.Calls.DATE} DESC LIMIT 35"
+            )?.use { c ->
+                val idxId = c.getColumnIndexOrThrow(CallLog.Calls._ID)
+                val idxNum = c.getColumnIndexOrThrow(CallLog.Calls.NUMBER)
+                val idxName = c.getColumnIndexOrThrow(CallLog.Calls.CACHED_NAME)
+                val idxType = c.getColumnIndexOrThrow(CallLog.Calls.TYPE)
+                val idxDate = c.getColumnIndexOrThrow(CallLog.Calls.DATE)
+                while (c.moveToNext()) {
+                    val stateLabel = when (c.getInt(idxType)) {
+                        CallLog.Calls.INCOMING_TYPE -> "INCOMING"
+                        CallLog.Calls.OUTGOING_TYPE -> "OUTGOING"
+                        CallLog.Calls.MISSED_TYPE -> "MISSED"
+                        CallLog.Calls.REJECTED_TYPE -> "REJECTED"
+                        else -> "CALL"
+                    }
+                    val num = c.getString(idxNum) ?: ""
+                    val name = c.getString(idxName) ?: (if (num.isNotBlank()) lookupContactName(num) else "") ?: ""
+                    items.put(
+                        JSONObject()
+                            .put("id", "sync-call-${c.getString(idxId)}")
+                            .put("state", stateLabel)
+                            .put("number", num)
+                            .put("contactName", name)
+                            .put("ts", c.getLong(idxDate))
+                    )
+                    if (items.length() >= 15) {
+                        BridgeRuntime.sendToIphone(
+                            JSONObject().put("type", "CALL_HISTORY").put("items", items).toString()
+                        )
+                        while (items.length() > 0) items.remove(0)
+                        Thread.sleep(60)
+                    }
+                }
+            }
+            if (items.length() > 0) {
+                BridgeRuntime.sendToIphone(
+                    JSONObject().put("type", "CALL_HISTORY").put("items", items).toString()
+                )
+            }
+        } catch (e: Exception) {
+            BridgeStore.log("Call log sync error: ${e.message}")
+        }
+    }
+
+    private fun syncContacts() {
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.READ_CONTACTS) != PackageManager.PERMISSION_GRANTED) {
+            return
+        }
+        try {
+            val seen = HashSet<String>()
+            val items = JSONArray()
+            contentResolver.query(
+                ContactsContract.CommonDataKinds.Phone.CONTENT_URI,
+                arrayOf(
+                    ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME,
+                    ContactsContract.CommonDataKinds.Phone.NUMBER
+                ),
+                null,
+                null,
+                "${ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME} ASC"
+            )?.use { c ->
+                val idxName = c.getColumnIndexOrThrow(ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME)
+                val idxNum = c.getColumnIndexOrThrow(ContactsContract.CommonDataKinds.Phone.NUMBER)
+                while (c.moveToNext() && seen.size < 250) {
+                    val name = (c.getString(idxName) ?: "").trim()
+                    val num = (c.getString(idxNum) ?: "").trim()
+                    if (num.isEmpty()) continue
+                    val key = "${name.lowercase()}|${num.filter { it.isDigit() || it == '+' }}"
+                    if (!seen.add(key)) continue
+                    items.put(JSONObject().put("name", name.ifEmpty { num }).put("number", num))
+                    if (items.length() >= 35) {
+                        BridgeRuntime.sendToIphone(
+                            JSONObject().put("type", "CONTACTS_SYNC").put("items", items).toString()
+                        )
+                        while (items.length() > 0) items.remove(0)
+                        Thread.sleep(50)
+                    }
+                }
+            }
+            if (items.length() > 0) {
+                BridgeRuntime.sendToIphone(
+                    JSONObject().put("type", "CONTACTS_SYNC").put("items", items).toString()
+                )
+            }
+            BridgeStore.log("Synced ${seen.size} Android contacts")
+        } catch (e: Exception) {
+            BridgeStore.log("Contacts sync error: ${e.message}")
+        }
+    }
+
+    private fun lookupContactName(phone: String): String? {
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.READ_CONTACTS) != PackageManager.PERMISSION_GRANTED) {
+            return null
+        }
+        return try {
+            val uri = Uri.withAppendedPath(ContactsContract.PhoneLookup.CONTENT_FILTER_URI, Uri.encode(phone))
+            contentResolver.query(uri, arrayOf(ContactsContract.PhoneLookup.DISPLAY_NAME), null, null, null)?.use {
+                if (it.moveToFirst()) it.getString(0) else null
+            }
+        } catch (_: Exception) {
+            null
         }
     }
 
@@ -331,6 +620,7 @@ class BridgeForegroundService : Service() {
         val id = cmd.optString("id").ifBlank { UUID.randomUUID().toString() }
         val recipient = cmd.optString("recipient").trim()
         val body = cmd.optString("body")
+        val subId = cmd.optInt("subId", -1).takeIf { it > 0 }
 
         if (recipient.isBlank() || body.isBlank()) {
             BridgeRuntime.sendToIphone(
@@ -348,12 +638,21 @@ class BridgeForegroundService : Service() {
         }
 
         try {
-            val smsManager = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            val baseSmsManager = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                 getSystemService(SmsManager::class.java)
             } else {
                 @Suppress("DEPRECATION")
                 SmsManager.getDefault()
             }
+            val smsManager = if (subId != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                baseSmsManager.createForSubscriptionId(subId)
+            } else if (subId != null) {
+                @Suppress("DEPRECATION")
+                SmsManager.getSmsManagerForSubscriptionId(subId)
+            } else {
+                baseSmsManager
+            }
+
             val parts = smsManager.divideMessage(body)
             pendingSms[id] = PendingSmsSend(
                 recipient = recipient,
@@ -384,7 +683,7 @@ class BridgeForegroundService : Service() {
                     subtitle = body
                 )
             )
-            BridgeStore.log("Dispatched SMS (${parts.size} part(s)) to $recipient")
+            BridgeStore.log("Dispatched SMS (${parts.size} part(s), subId=${subId ?: "default"}) to $recipient")
         } catch (e: Exception) {
             pendingSms.remove(id)
             BridgeRuntime.sendToIphone(
@@ -461,17 +760,38 @@ class BridgeForegroundService : Service() {
     }
 
     @SuppressLint("MissingPermission")
-    private fun handleDialRequest(number: String) {
+    private fun findPhoneAccountForSubId(telecom: TelecomManager, subId: Int): PhoneAccountHandle? {
+        return try {
+            val handles = telecom.callCapablePhoneAccounts
+            val sm = getSystemService(Context.TELEPHONY_SUBSCRIPTION_SERVICE) as SubscriptionManager
+            val subInfo = sm.activeSubscriptionInfoList.orEmpty().firstOrNull { it.subscriptionId == subId }
+            val iccId = subInfo?.iccId
+            handles.firstOrNull { h ->
+                h.id == subId.toString() || (!iccId.isNullOrBlank() && h.id.contains(iccId, ignoreCase = true))
+            } ?: subInfo?.let { info -> handles.getOrNull(info.simSlotIndex) }
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun handleDialRequest(number: String, subId: Int? = null) {
         if (number.isBlank()) return
-        BridgeStore.log("Received DIAL_REQUEST: $number")
+        BridgeStore.log("Received DIAL_REQUEST: $number (subId=${subId ?: "default"})")
         BridgeRuntime.audioRelay?.startListening()
         pushDeviceStatus()
 
         val uri = Uri.fromParts("tel", number, null)
         val telecom = getSystemService(Context.TELECOM_SERVICE) as TelecomManager
+        val extras = Bundle()
+        if (subId != null) {
+            findPhoneAccountForSubId(telecom, subId)?.let { handle ->
+                extras.putParcelable(TelecomManager.EXTRA_PHONE_ACCOUNT_HANDLE, handle)
+            }
+        }
+
         try {
-            // Works from background services on Xiaomi HyperOS / Android 10+ without activity-launch blocks
-            telecom.placeCall(uri, Bundle())
+            telecom.placeCall(uri, extras)
             BridgeStore.log("Placed call via TelecomManager.placeCall")
             return
         } catch (e: SecurityException) {

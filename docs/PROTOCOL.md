@@ -166,10 +166,21 @@ Because BLE characteristics split writes/notifications according to the negotiat
 {
   "type": "DIAL_REQUEST",
   "number": "+989120000000",
-  "mode": "LOCAL_WIFI"
+  "mode": "local_wifi",
+  "subId": 1
 }
 ```
-`mode` values: `ANDROID_SIM`, `LOCAL_WIFI`.
+
+### `RUN_USSD` / `USSD_RESPONSE` & `CALL_FORWARD`
+- `RUN_USSD` (`code`, optional `subId`) -> `USSD_RESPONSE` (`code`, `success`, `message`).
+- `CALL_FORWARD` (`enable`, `target`, optional `subId`).
+
+### `SYNC_REQUEST` -> `SMS_HISTORY`, `CALL_HISTORY`, `CONTACTS_SYNC`
+- iOS sends `{"type":"SYNC_REQUEST","scope":"all"}`.
+- Android streams batched `SMS_HISTORY`, `CALL_HISTORY`, `CONTACTS_SYNC` payloads.
+
+### `AUDIO_STATUS` (Android -> iOS)
+- Reports active Android capture source (`direct: true/false`, `source: "VOICE_CALL (Direct)" | ...`).
 
 ## 5. Local Wi-Fi Audio Stream (Optional Port 54810)
 - Transport: TCP stream on Android's Hotspot / local Wi-Fi IP (`wifiIp:54810`).

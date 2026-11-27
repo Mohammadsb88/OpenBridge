@@ -22,6 +22,14 @@ struct PairHelloPayload: Codable {
     let pub: String
 }
 
+struct SimCardInfo: Codable, Identifiable, Equatable {
+    let slot: Int
+    let subId: Int
+    let name: String
+
+    var id: Int { subId }
+}
+
 struct DeviceStatus: Codable, Equatable {
     let battery: Int
     let charging: Bool
@@ -30,6 +38,7 @@ struct DeviceStatus: Codable, Equatable {
     let operatorName: String
     let wifiIp: String?
     let audioPort: Int?
+    let sims: [SimCardInfo]?
     let ts: Int64
 
     enum CodingKeys: String, CodingKey {
@@ -40,8 +49,41 @@ struct DeviceStatus: Codable, Equatable {
         case operatorName = "operator"
         case wifiIp
         case audioPort
+        case sims
         case ts
     }
+}
+
+struct AndroidContact: Identifiable, Codable, Equatable {
+    let name: String
+    let number: String
+
+    var id: String { "\(name)|\(number)" }
+}
+
+struct UssdResponse: Codable, Equatable {
+    let code: String
+    let success: Bool
+    let message: String
+    let ts: Int64
+}
+
+struct AudioStatusInfo: Codable, Equatable {
+    let direct: Bool
+    let source: String
+    let ts: Int64
+}
+
+struct SmsHistoryBatch: Codable {
+    let items: [RelayedSms]
+}
+
+struct CallHistoryBatch: Codable {
+    let items: [RelayedCall]
+}
+
+struct ContactsSyncBatch: Codable {
+    let items: [AndroidContact]
 }
 
 struct RelayedSms: Identifiable, Codable, Equatable {

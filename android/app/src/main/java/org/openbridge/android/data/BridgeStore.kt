@@ -70,7 +70,7 @@ object BridgeStore {
     private val _wifiIp = MutableStateFlow("")
     val wifiIp: StateFlow<String> = _wifiIp.asStateFlow()
 
-    private val _autoSpeaker = MutableStateFlow(true)
+    private val _autoSpeaker = MutableStateFlow(false)
     val autoSpeaker: StateFlow<Boolean> = _autoSpeaker.asStateFlow()
 
     private val _qrPayload = MutableStateFlow("")
@@ -90,7 +90,7 @@ object BridgeStore {
             _language.value = sp.getString(KEY_LANGUAGE, "system") ?: "system"
             _voiceMode.value = sp.getString(KEY_VOICE_MODE, "standard") ?: "standard"
             _forwardSipNumber.value = sp.getString(KEY_FORWARD_SIP, "") ?: ""
-            _autoSpeaker.value = sp.getBoolean(KEY_AUTO_SPEAKER, true)
+            _autoSpeaker.value = sp.getBoolean(KEY_AUTO_SPEAKER, false)
             refreshQrPayload(sp)
         }
     }

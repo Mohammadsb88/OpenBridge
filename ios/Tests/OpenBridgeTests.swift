@@ -62,4 +62,26 @@ final class OpenBridgeTests: XCTestCase {
         let ack = try JSONDecoder().decode(SmsSentAck.self, from: sentAckJson)
         XCTAssertTrue(ack.success)
     }
+
+    func testV04SyncAndDualSimModels() throws {
+        let statusJson = """
+        {"battery":88,"charging":true,"signal":4,"networkType":"Cellular","operator":"MCI","wifiIp":"192.168.43.1","audioPort":54810,"sims":[{"slot":0,"subId":1,"name":"MCI"},{"slot":1,"subId":2,"name":"Irancell"}],"ts":1732480000000}
+        """.data(using: .utf8)!
+        let status = try JSONDecoder().decode(DeviceStatus.self, from: statusJson)
+        XCTAssertEqual(status.sims?.count, 2)
+        XCTAssertEqual(status.sims?[1].name, "Irancell")
+
+        let ussdJson = """
+        {"code":"*140#","success":true,"message":"Etebar shoma 120000 Rial ast","ts":1732480000000}
+        """.data(using: .utf8)!
+        let ussd = try JSONDecoder().decode(UssdResponse.self, from: ussdJson)
+        XCTAssertTrue(ussd.success)
+        XCTAssertEqual(ussd.code, "*140#")
+
+        let contactsJson = """
+        {"items":[{"name":"Reza","number":"09121112233"}]}
+        """.data(using: .utf8)!
+        let batch = try JSONDecoder().decode(ContactsSyncBatch.self, from: contactsJson)
+        XCTAssertEqual(batch.items.first?.number, "09121112233")
+    }
 }

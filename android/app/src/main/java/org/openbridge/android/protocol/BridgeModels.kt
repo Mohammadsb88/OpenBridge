@@ -1,5 +1,6 @@
 package org.openbridge.android.protocol
 
+import org.json.JSONArray
 import org.json.JSONObject
 
 object BridgeModels {
@@ -42,7 +43,8 @@ object BridgeModels {
         signal: Int,
         networkType: String,
         operatorName: String,
-        wifiIp: String = ""
+        wifiIp: String = "",
+        sims: JSONArray = JSONArray()
     ): String {
         return JSONObject()
             .put("type", "DEVICE_STATUS")
@@ -53,6 +55,7 @@ object BridgeModels {
             .put("operator", operatorName)
             .put("wifiIp", wifiIp)
             .put("audioPort", BridgeConstants.LOCAL_AUDIO_PORT)
+            .put("sims", sims)
             .put("ts", System.currentTimeMillis())
             .toString()
     }
@@ -112,6 +115,25 @@ object BridgeModels {
             .put("wifiIp", wifiIp)
             .put("audioPort", BridgeConstants.LOCAL_AUDIO_PORT)
             .put("ts", ts)
+            .toString()
+    }
+
+    fun audioStatusJson(direct: Boolean, source: String): String {
+        return JSONObject()
+            .put("type", "AUDIO_STATUS")
+            .put("direct", direct)
+            .put("source", source)
+            .put("ts", System.currentTimeMillis())
+            .toString()
+    }
+
+    fun ussdResponseJson(code: String, success: Boolean, message: String): String {
+        return JSONObject()
+            .put("type", "USSD_RESPONSE")
+            .put("code", code)
+            .put("success", success)
+            .put("message", message)
+            .put("ts", System.currentTimeMillis())
             .toString()
     }
 }
