@@ -26,6 +26,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.BluetoothSearching
+import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.BatteryChargingFull
 import androidx.compose.material.icons.filled.BluetoothConnected
 import androidx.compose.material.icons.filled.Call
@@ -60,6 +61,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -149,6 +151,7 @@ fun OpenBridgeApp(
         val voiceMode by BridgeStore.voiceMode.collectAsState()
         val forwardSip by BridgeStore.forwardSipNumber.collectAsState()
         val wifiIp by BridgeStore.wifiIp.collectAsState()
+        val autoSpeaker by BridgeStore.autoSpeaker.collectAsState()
 
         Scaffold(
             containerColor = NavyBg,
@@ -257,11 +260,13 @@ fun OpenBridgeApp(
                     currentLanguage = currentLanguage,
                     voiceMode = voiceMode,
                     forwardSip = forwardSip,
+                    autoSpeaker = autoSpeaker,
                     shizukuReady = shizukuReady,
                     rootAvailable = rootAvailable,
                     onLanguageChange = onLanguageChange,
                     onVoiceModeChange = { BridgeStore.setVoiceMode(it) },
                     onForwardSipChange = { BridgeStore.setForwardSipNumber(it) },
+                    onAutoSpeakerChange = { BridgeStore.setAutoSpeaker(it) },
                     onRequestShizuku = onRequestShizuku,
                     onToggleForwarding = onToggleForwarding,
                     onOpenDiagnostics = { showLogsDialog = true },
@@ -516,9 +521,13 @@ private fun ActivityTab(modifier: Modifier, events: List<RelayedEvent>) {
                         contentAlignment = Alignment.Center
                     ) {
                         Icon(
-                            imageVector = if (event.kind == "SMS") Icons.Default.Sms else Icons.Default.Call,
+                            imageVector = when (event.kind) {
+                                "SMS" -> Icons.Default.Sms
+                                "SMS_OUT" -> Icons.AutoMirrored.Filled.Send
+                                else -> Icons.Default.Call
+                            },
                             contentDescription = null,
-                            tint = CyanAccent,
+                            tint = if (event.kind == "SMS_OUT") EmeraldOk else CyanAccent,
                             modifier = Modifier.size(20.dp)
                         )
                     }
@@ -559,11 +568,13 @@ private fun SettingsTab(
     currentLanguage: String,
     voiceMode: String,
     forwardSip: String,
+    autoSpeaker: Boolean,
     shizukuReady: Boolean,
     rootAvailable: Boolean,
     onLanguageChange: (String) -> Unit,
     onVoiceModeChange: (String) -> Unit,
     onForwardSipChange: (String) -> Unit,
+    onAutoSpeakerChange: (Boolean) -> Unit,
     onRequestShizuku: () -> Unit,
     onToggleForwarding: (Boolean, String) -> Unit,
     onOpenDiagnostics: () -> Unit,
@@ -615,6 +626,19 @@ private fun SettingsTab(
                         Spacer(Modifier.width(6.dp))
                         Text(stringResource(R.string.btn_grant_shizuku))
                     }
+                }
+
+                HorizontalDivider(color = SlateCardBorder, modifier = Modifier.padding(vertical = 4.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text(stringResource(R.string.auto_speaker_title), style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium)
+                        Text(stringResource(R.string.auto_speaker_sub), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    Switch(checked = autoSpeaker, onCheckedChange = onAutoSpeakerChange)
                 }
 
                 HorizontalDivider(color = SlateCardBorder, modifier = Modifier.padding(vertical = 4.dp))

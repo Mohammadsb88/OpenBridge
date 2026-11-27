@@ -37,12 +37,29 @@ final class OpenBridgeTests: XCTestCase {
         XCTAssertEqual(decrypted, msg)
     }
 
-    func testMulawCodecRoundTrip() {
+    func testMulawAndAlawCodecsRoundTrip() {
         let samples: [Int16] = [0, 512, -512, 8192, -16384]
         for s in samples {
-            let encoded = SipClient.linearToMulaw(s)
-            let decoded = SipClient.mulawToLinear(encoded)
-            XCTAssertLessThan(abs(Int(s) - Int(decoded)), 600)
+            let ulaw = SipClient.mulawToLinear(SipClient.linearToMulaw(s))
+            XCTAssertLessThan(abs(Int(s) - Int(ulaw)), 600)
+
+            let alaw = SipClient.alawToLinear(SipClient.linearToAlaw(s))
+            XCTAssertLessThan(abs(Int(s) - Int(alaw)), 600)
         }
+    }
+
+    func testSmsModelsBackwardCompatibility() throws {
+        let incomingJson = """
+        {"id":"1","sender":"+989120000000","contactName":"Ali","body":"Hi","otp":"","ts":1732480000000}
+        """.data(using: .utf8)!
+        let sms = try JSONDecoder().decode(RelayedSms.self, from: incomingJson)
+        XCTAssertFalse(sms.isOutgoingMessage)
+        XCTAssertEqual(sms.displaySender, "Ali")
+
+        let sentAckJson = """
+        {"id":"1","recipient":"+989120000000","body":"Salam","success":true,"error":"","ts":1732480000000}
+        """.data(using: .utf8)!
+        let ack = try JSONDecoder().decode(SmsSentAck.self, from: sentAckJson)
+        XCTAssertTrue(ack.success)
     }
 }

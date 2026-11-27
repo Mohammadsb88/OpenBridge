@@ -76,6 +76,25 @@ object BridgeModels {
             .toString()
     }
 
+    fun smsSentJson(
+        id: String,
+        recipient: String,
+        body: String,
+        success: Boolean,
+        error: String = "",
+        ts: Long = System.currentTimeMillis()
+    ): String {
+        return JSONObject()
+            .put("type", "SMS_SENT")
+            .put("id", id)
+            .put("recipient", recipient)
+            .put("body", body)
+            .put("success", success)
+            .put("error", error)
+            .put("ts", ts)
+            .toString()
+    }
+
     fun callStateJson(
         id: String,
         state: String,

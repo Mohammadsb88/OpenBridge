@@ -39,6 +39,8 @@
     <string name="btn_enable_forward">Forward Calls (*21*)</string>
     <string name="btn_disable_forward">Cancel Forward (#21#)</string>
     <string name="btn_grant_shizuku">Authorize Shizuku</string>
+    <string name="auto_speaker_title">Auto Speakerphone (Standard Mode)</string>
+    <string name="auto_speaker_sub">Enables Android speaker with echo suppression so calls bridge cleanly without Root</string>
 
     <string name="activity_empty">No relayed SMS or Call events yet.</string>
     <string name="otp_label">OTP: %1$s</string>

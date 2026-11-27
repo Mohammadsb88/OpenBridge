@@ -112,6 +112,29 @@ Because BLE characteristics split writes/notifications according to the negotiat
 }
 ```
 
+### `SEND_SMS` (iOS -> Android)
+```json
+{
+  "type": "SEND_SMS",
+  "id": "uuid",
+  "recipient": "+989120000000",
+  "body": "سلام، پیامک آزمایشی از آیفون"
+}
+```
+
+### `SMS_SENT` (Android -> iOS)
+```json
+{
+  "type": "SMS_SENT",
+  "id": "uuid",
+  "recipient": "+989120000000",
+  "body": "سلام، پیامک آزمایشی از آیفون",
+  "success": true,
+  "error": "",
+  "ts": 1732480000000
+}
+```
+
 ### `CALL_STATE` (Android -> iOS)
 ```json
 {
@@ -136,7 +159,7 @@ Because BLE characteristics split writes/notifications according to the negotiat
   "smsBody": "I can't talk right now, I'll call you back."
 }
 ```
-`action` values: `ACCEPT`, `REJECT`, `SILENCE`, `QUICK_SMS`.
+`action` values: `ACCEPT`, `REJECT`, `SILENCE`, `QUICK_SMS`, `MUTE`, `UNMUTE`, `SPEAKER_ON`, `SPEAKER_OFF`.
 
 ### `DIAL_REQUEST` (iOS -> Android)
 ```json

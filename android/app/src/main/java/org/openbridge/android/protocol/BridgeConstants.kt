@@ -18,6 +18,10 @@ object BridgeConstants {
     const val ACTION_REJECT = "REJECT"
     const val ACTION_SILENCE = "SILENCE"
     const val ACTION_QUICK_SMS = "QUICK_SMS"
+    const val ACTION_MUTE = "MUTE"
+    const val ACTION_UNMUTE = "UNMUTE"
+    const val ACTION_SPEAKER_ON = "SPEAKER_ON"
+    const val ACTION_SPEAKER_OFF = "SPEAKER_OFF"
     const val LOCAL_AUDIO_PORT = 54810
 
     const val CALL_RINGING = "RINGING"

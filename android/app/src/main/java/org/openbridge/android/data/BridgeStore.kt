@@ -41,6 +41,7 @@ object BridgeStore {
     private const val KEY_LANGUAGE = "app_language" // "system", "en", "fa"
     private const val KEY_VOICE_MODE = "voice_mode" // "standard", "shizuku", "root", "sip"
     private const val KEY_FORWARD_SIP = "forward_sip_number"
+    private const val KEY_AUTO_SPEAKER = "auto_speaker"
 
     @Volatile
     private var prefs: SharedPreferences? = null
@@ -69,6 +70,9 @@ object BridgeStore {
     private val _wifiIp = MutableStateFlow("")
     val wifiIp: StateFlow<String> = _wifiIp.asStateFlow()
 
+    private val _autoSpeaker = MutableStateFlow(true)
+    val autoSpeaker: StateFlow<Boolean> = _autoSpeaker.asStateFlow()
+
     private val _qrPayload = MutableStateFlow("")
     val qrPayload: StateFlow<String> = _qrPayload.asStateFlow()
 
@@ -86,6 +90,7 @@ object BridgeStore {
             _language.value = sp.getString(KEY_LANGUAGE, "system") ?: "system"
             _voiceMode.value = sp.getString(KEY_VOICE_MODE, "standard") ?: "standard"
             _forwardSipNumber.value = sp.getString(KEY_FORWARD_SIP, "") ?: ""
+            _autoSpeaker.value = sp.getBoolean(KEY_AUTO_SPEAKER, true)
             refreshQrPayload(sp)
         }
     }
@@ -170,6 +175,12 @@ object BridgeStore {
 
     fun setWifiIp(ip: String) {
         _wifiIp.value = ip
+    }
+
+    fun setAutoSpeaker(enabled: Boolean) {
+        prefs?.edit()?.putBoolean(KEY_AUTO_SPEAKER, enabled)?.apply()
+        _autoSpeaker.value = enabled
+        log("Auto speakerphone set to: $enabled")
     }
 
     fun getSavedLanguage(context: Context): String {

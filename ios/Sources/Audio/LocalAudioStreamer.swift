@@ -2,52 +2,81 @@ import Foundation
 import AVFoundation
 import Network
 
-/// Streams full-duplex 16kHz 16-bit mono PCM audio over TCP to Android's LocalAudioRelayServer.
+/// Full-duplex 16kHz 16-bit mono PCM audio streamer over TCP to Android's LocalAudioRelayServer.
+/// Includes automatic TCP retry backoff, CallKit AudioSession synchronization,
+/// even-byte PCM sample framing, and mute control.
 final class LocalAudioStreamer {
     private let sampleRate: Double = 16000
     private var connection: NWConnection?
     private var engine: AVAudioEngine?
     private var playerNode: AVAudioPlayerNode?
     private var playbackFormat: AVAudioFormat?
+
     private var isRunning = false
+    private var isSocketReady = false
+    private var isAudioSessionReady = false
+    private var isEngineStarted = false
+    private var targetHost = ""
+    private var targetPort = 54810
+    private var retryCount = 0
+    private let maxRetries = 12
+    private var rxAccumulator = Data()
     private let queue = DispatchQueue(label: "org.openbridge.ios.localaudio")
 
+    var isMuted: Bool = false
     var onLog: ((String) -> Void)?
+    var onStateChanged: ((LocalAudioState) -> Void)?
 
-    func start(host: String, port: Int) {
-        stop()
-        let trimmedHost = host.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedHost.isEmpty, let nwPort = NWEndpoint.Port(rawValue: UInt16(port)) else {
-            onLog?("LocalAudioStreamer skipped: invalid host '\(host)'")
-            return
-        }
-
-        isRunning = true
-        let params = NWParameters.tcp
-        let conn = NWConnection(host: NWEndpoint.Host(trimmedHost), port: nwPort, using: params)
-        connection = conn
-
-        conn.stateUpdateHandler = { [weak self] state in
+    func start(host: String, port: Int, audioAlreadyActivated: Bool) {
+        queue.async { [weak self] in
             guard let self else { return }
-            switch state {
-            case .ready:
-                self.onLog?("Local Wi-Fi audio socket connected to \(trimmedHost):\(port)")
-                self.setupAudioEngine()
-                self.receiveLoop()
-            case .failed(let err):
-                self.onLog?("Local audio socket failed: \(err.localizedDescription)")
-                self.stop()
-            case .cancelled:
-                break
-            default:
-                break
+            self.teardownLocked()
+
+            let trimmedHost = host.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmedHost.isEmpty, port > 0, port <= 65535 else {
+                self.onLog?("LocalAudioStreamer skipped: invalid host '\(host)'")
+                self.notifyState(.failed)
+                return
+            }
+
+            self.isRunning = true
+            self.isAudioSessionReady = audioAlreadyActivated
+            self.targetHost = trimmedHost
+            self.targetPort = port
+            self.retryCount = 0
+            self.notifyState(.connecting)
+            self.connectLocked()
+        }
+    }
+
+    func onCallKitAudioActivated() {
+        queue.async { [weak self] in
+            guard let self else { return }
+            self.isAudioSessionReady = true
+            if self.isRunning && self.isSocketReady && !self.isEngineStarted {
+                self.setupAudioEngineLocked()
             }
         }
-        conn.start(queue: queue)
+    }
+
+    func setSpeakerEnabled(_ enabled: Bool) {
+        let session = AVAudioSession.sharedInstance()
+        try? session.overrideOutputAudioPort(enabled ? .speaker : .none)
     }
 
     func stop() {
+        queue.async { [weak self] in
+            self?.teardownLocked()
+            self?.notifyState(.idle)
+        }
+    }
+
+    private func teardownLocked() {
         isRunning = false
+        isSocketReady = false
+        isEngineStarted = false
+        rxAccumulator.removeAll(keepingCapacity: false)
+        connection?.stateUpdateHandler = nil
         connection?.cancel()
         connection = nil
         if let engine {
@@ -59,12 +88,76 @@ final class LocalAudioStreamer {
         engine = nil
     }
 
-    private func setupAudioEngine() {
+    private func connectLocked() {
+        guard isRunning, let nwPort = NWEndpoint.Port(rawValue: UInt16(targetPort)) else { return }
+        connection?.stateUpdateHandler = nil
+        connection?.cancel()
+
+        let params = NWParameters.tcp
+        if let tcpOpts = params.defaultProtocolStack.transportProtocol as? NWProtocolTCP.Options {
+            tcpOpts.noDelay = true
+            tcpOpts.connectionTimeout = 3
+        }
+        let conn = NWConnection(host: NWEndpoint.Host(targetHost), port: nwPort, using: params)
+        connection = conn
+
+        conn.stateUpdateHandler = { [weak self] state in
+            guard let self else { return }
+            switch state {
+            case .ready:
+                self.isSocketReady = true
+                self.retryCount = 0
+                self.onLog?("Local Wi-Fi audio connected to \(self.targetHost):\(self.targetPort)")
+                self.notifyState(.connected)
+                if self.isAudioSessionReady && !self.isEngineStarted {
+                    self.setupAudioEngineLocked()
+                }
+                self.receiveLoopLocked(on: conn)
+            case .failed(let err):
+                self.isSocketReady = false
+                self.onLog?("Local audio socket error: \(err.localizedDescription)")
+                self.scheduleRetryLocked()
+            case .waiting(let err):
+                self.onLog?("Local audio waiting: \(err.localizedDescription)")
+            case .cancelled:
+                break
+            default:
+                break
+            }
+        }
+        conn.start(queue: queue)
+    }
+
+    private func scheduleRetryLocked() {
+        guard isRunning else { return }
+        if retryCount >= maxRetries {
+            onLog?("Local audio max retries reached")
+            teardownLocked()
+            notifyState(.failed)
+            return
+        }
+        retryCount += 1
+        notifyState(.reconnecting)
+        queue.asyncAfter(deadline: .now() + 0.35) { [weak self] in
+            guard let self, self.isRunning else { return }
+            self.connectLocked()
+        }
+    }
+
+    private func setupAudioEngineLocked() {
+        guard !isEngineStarted, isRunning else { return }
         do {
             let session = AVAudioSession.sharedInstance()
-            try session.setCategory(.playAndRecord, mode: .voiceChat, options: [.allowBluetooth, .defaultToSpeaker])
-            try session.setPreferredSampleRate(sampleRate)
-            try session.setActive(true)
+            try? session.setCategory(
+                .playAndRecord,
+                mode: .voiceChat,
+                options: [.allowBluetooth, .allowBluetoothA2DP]
+            )
+            try? session.setPreferredSampleRate(sampleRate)
+            try? session.setPreferredIOBufferDuration(0.02)
+            if !isAudioSessionReady {
+                try? session.setActive(true)
+            }
 
             let audioEngine = AVAudioEngine()
             let player = AVAudioPlayerNode()
@@ -83,15 +176,19 @@ final class LocalAudioStreamer {
                 interleaved: true
             ) else { return }
 
-            self.playbackFormat = floatFormat
+            playbackFormat = floatFormat
             audioEngine.connect(player, to: audioEngine.mainMixerNode, format: floatFormat)
 
             let input = audioEngine.inputNode
             let inputFormat = input.outputFormat(forBus: 0)
+            guard inputFormat.sampleRate > 0, inputFormat.channelCount > 0 else {
+                onLog?("Input audio format invalid yet; waiting for route activation")
+                return
+            }
             let converter = AVAudioConverter(from: inputFormat, to: int16Format)
 
             input.installTap(onBus: 0, bufferSize: 1024, format: inputFormat) { [weak self] buffer, _ in
-                guard let self, self.isRunning, let converter, let conn = self.connection else { return }
+                guard let self, self.isRunning, self.isSocketReady, let converter, let conn = self.connection else { return }
                 let ratio = self.sampleRate / inputFormat.sampleRate
                 let cap = AVAudioFrameCount(Double(buffer.frameLength) * ratio + 16)
                 guard let outBuffer = AVAudioPCMBuffer(pcmFormat: int16Format, frameCapacity: cap) else { return }
@@ -109,7 +206,12 @@ final class LocalAudioStreamer {
                 }
                 if err == nil, outBuffer.frameLength > 0, let ptr = outBuffer.int16ChannelData?[0] {
                     let byteCount = Int(outBuffer.frameLength) * MemoryLayout<Int16>.size
-                    let data = Data(bytes: ptr, count: byteCount)
+                    let data: Data
+                    if self.isMuted {
+                        data = Data(count: byteCount)
+                    } else {
+                        data = Data(bytes: ptr, count: byteCount)
+                    }
                     conn.send(content: data, completion: .contentProcessed { _ in })
                 }
             }
@@ -118,23 +220,35 @@ final class LocalAudioStreamer {
             player.play()
             self.engine = audioEngine
             self.playerNode = player
+            self.isEngineStarted = true
+            onLog?("LocalAudio AVAudioEngine started (16kHz PCM)")
         } catch {
             onLog?("AVAudioEngine setup error: \(error.localizedDescription)")
         }
     }
 
-    private func receiveLoop() {
-        guard isRunning, let conn = connection else { return }
+    private func receiveLoopLocked(on conn: NWConnection) {
+        guard isRunning else { return }
         conn.receive(minimumIncompleteLength: 320, maximumLength: 4096) { [weak self] data, _, isComplete, error in
-            guard let self, self.isRunning else { return }
+            guard let self, self.isRunning, self.connection === conn else { return }
             if let data, !data.isEmpty {
-                self.playInt16Pcm(data)
+                self.rxAccumulator.append(data)
+                let evenCount = self.rxAccumulator.count & ~1
+                if evenCount > 0 {
+                    let chunk = self.rxAccumulator.prefix(evenCount)
+                    self.playInt16Pcm(Data(chunk))
+                    self.rxAccumulator.removeFirst(evenCount)
+                }
             }
             if isComplete || error != nil {
-                self.stop()
+                self.isSocketReady = false
+                if let error {
+                    self.onLog?("Audio receive closed: \(error.localizedDescription)")
+                }
+                self.scheduleRetryLocked()
                 return
             }
-            self.receiveLoop()
+            self.receiveLoopLocked(on: conn)
         }
     }
 
@@ -153,5 +267,11 @@ final class LocalAudioStreamer {
             }
         }
         player.scheduleBuffer(pcm, completionHandler: nil)
+    }
+
+    private func notifyState(_ state: LocalAudioState) {
+        DispatchQueue.main.async {
+            self.onStateChanged?(state)
+        }
     }
 }

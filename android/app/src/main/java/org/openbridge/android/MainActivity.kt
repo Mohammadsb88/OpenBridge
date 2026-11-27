@@ -40,6 +40,7 @@ class MainActivity : ComponentActivity() {
         ActivityResultContracts.RequestMultiplePermissions()
     ) {
         refreshPermissions()
+        BridgeForegroundService.refreshForegroundType(this)
     }
 
     private val shizukuListener = Shizuku.OnRequestPermissionResultListener { _, grantResult ->

@@ -21,6 +21,10 @@ final class BridgeManager: NSObject, ObservableObject {
     @Published var activeCall: RelayedCall?
     @Published var logs: [String] = []
     @Published var sipStatusText: String = "Unregistered"
+    @Published var audioLinkState: LocalAudioState = .idle
+    @Published var isCallMuted: Bool = false
+    @Published var isSpeakerOn: Bool = false
+
     @Published var appLanguage: String {
         didSet {
             UserDefaults.standard.set(appLanguage, forKey: Self.languageKey)
@@ -59,6 +63,8 @@ final class BridgeManager: NSObject, ObservableObject {
     private let localAudio = LocalAudioStreamer()
     private let sipClient = SipClient()
     private let callKit = CallKitManager.shared
+    private var isSipCallActive = false
+
     private let timeFormatter: DateFormatter = {
         let f = DateFormatter()
         f.dateFormat = "HH:mm:ss"
@@ -96,6 +102,9 @@ final class BridgeManager: NSObject, ObservableObject {
 
     private func setupAudioAndCallKitBindings() {
         localAudio.onLog = { [weak self] msg in self?.log(msg) }
+        localAudio.onStateChanged = { [weak self] st in
+            DispatchQueue.main.async { self?.audioLinkState = st }
+        }
         sipClient.onLog = { [weak self] msg in self?.log(msg) }
         callKit.onLog = { [weak self] msg in self?.log(msg) }
 
@@ -103,19 +112,67 @@ final class BridgeManager: NSObject, ObservableObject {
             DispatchQueue.main.async { self?.sipStatusText = text }
         }
         sipClient.onIncomingCall = { [weak self] handle, name in
-            self?.callKit.reportIncomingCall(handle: handle, displayName: name)
+            guard let self else { return }
+            self.isSipCallActive = true
+            self.activeCall = RelayedCall(
+                id: UUID().uuidString,
+                state: "RINGING",
+                number: handle,
+                contactName: name,
+                wifiIp: nil,
+                audioPort: nil,
+                ts: Int64(Date().timeIntervalSince1970 * 1000)
+            )
+            self.callKit.reportIncomingCall(handle: handle, displayName: name)
         }
         sipClient.onCallConnected = { [weak self] in
             self?.callKit.reportOutgoingConnected()
+            if var call = self?.activeCall {
+                call = RelayedCall(
+                    id: call.id, state: "OFFHOOK", number: call.number,
+                    contactName: call.contactName, wifiIp: nil, audioPort: nil, ts: call.ts
+                )
+                DispatchQueue.main.async { self?.activeCall = call }
+            }
         }
         sipClient.onCallEnded = { [weak self] in
+            self?.isSipCallActive = false
             self?.callKit.reportRemoteEnded()
+            DispatchQueue.main.async {
+                self?.activeCall = nil
+                self?.isCallMuted = false
+            }
+        }
+
+        callKit.onAudioSessionActivated = { [weak self] in
+            guard let self else { return }
+            self.localAudio.onCallKitAudioActivated()
+            self.sipClient.onCallKitAudioActivated()
+        }
+        callKit.onAudioSessionDeactivated = { [weak self] in
+            guard let self else { return }
+            self.localAudio.stop()
+            DispatchQueue.main.async {
+                self.isCallMuted = false
+                self.isSpeakerOn = false
+            }
+        }
+        callKit.onMuteChanged = { [weak self] muted in
+            guard let self else { return }
+            self.localAudio.isMuted = muted
+            self.sipClient.isMuted = muted
+            DispatchQueue.main.async { self.isCallMuted = muted }
+            self.sendEncryptedDict([
+                "type": "CALL_ACTION",
+                "action": muted ? "MUTE" : "UNMUTE",
+                "number": self.activeCall?.number ?? ""
+            ])
         }
 
         callKit.onAnswerCall = { [weak self] _ in
             guard let self else { return }
-            if self.voiceMode == .sip && self.sipConfig.isConfigured {
-                self.sipClient.answerIncomingCall()
+            if self.isSipCallActive || (self.voiceMode == .sip && self.sipConfig.isConfigured && self.activeCall?.wifiIp == nil) {
+                self.sipClient.answerIncomingCall(audioAlreadyActivated: self.callKit.isAudioSessionActive)
             } else {
                 let num = self.activeCall?.number ?? ""
                 self.sendCallAction(action: "ACCEPT", number: num)
@@ -125,23 +182,32 @@ final class BridgeManager: NSObject, ObservableObject {
         callKit.onEndCall = { [weak self] _ in
             guard let self else { return }
             self.localAudio.stop()
-            if self.voiceMode == .sip {
+            if self.isSipCallActive || self.voiceMode == .sip {
                 self.sipClient.hangup()
+                self.isSipCallActive = false
             }
             if let active = self.activeCall {
                 self.sendCallAction(action: "REJECT", number: active.number)
+            }
+            DispatchQueue.main.async {
+                self.activeCall = nil
+                self.isCallMuted = false
             }
         }
         callKit.onStartOutgoingCall = { [weak self] _, number in
             guard let self else { return }
             if self.voiceMode == .sip && self.sipConfig.isConfigured {
-                self.sipClient.makeCall(to: number)
+                self.isSipCallActive = true
+                self.sipClient.makeCall(to: number, audioAlreadyActivated: self.callKit.isAudioSessionActive)
             } else {
                 self.sendDialRequest(number: number)
                 if self.voiceMode == .localWifi {
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
-                        self.startLocalAudioIfAvailable()
-                        self.callKit.reportOutgoingConnected()
+                    // Start connecting immediately; LocalAudioStreamer auto-retries until Android binds 54810
+                    self.startLocalAudioIfAvailable()
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) {
+                        if self.activeCall != nil {
+                            self.callKit.reportOutgoingConnected()
+                        }
                     }
                 }
             }
@@ -165,6 +231,7 @@ final class BridgeManager: NSObject, ObservableObject {
             audioPort: deviceStatus?.audioPort,
             ts: Int64(Date().timeIntervalSince1970 * 1000)
         )
+        activeCall = call
         calls.insert(call, at: 0)
         if calls.count > 100 { calls.removeLast() }
 
@@ -175,15 +242,98 @@ final class BridgeManager: NSObject, ObservableObject {
         }
     }
 
+    func answerActiveCall() {
+        if callKit.activeCallUUID != nil {
+            callKit.answerActiveCall()
+        } else if let num = activeCall?.number {
+            sendCallAction(action: "ACCEPT", number: num)
+            startLocalAudioIfAvailable()
+        }
+    }
+
+    func endCurrentCall() {
+        if callKit.activeCallUUID != nil {
+            callKit.endActiveCall()
+        } else {
+            localAudio.stop()
+            if isSipCallActive { sipClient.hangup() }
+            if let num = activeCall?.number {
+                sendCallAction(action: "REJECT", number: num)
+            }
+            activeCall = nil
+        }
+    }
+
+    func toggleMute() {
+        let next = !isCallMuted
+        if callKit.activeCallUUID != nil {
+            callKit.setMuted(next)
+        } else {
+            localAudio.isMuted = next
+            sipClient.isMuted = next
+            isCallMuted = next
+            sendEncryptedDict([
+                "type": "CALL_ACTION",
+                "action": next ? "MUTE" : "UNMUTE",
+                "number": activeCall?.number ?? ""
+            ])
+        }
+    }
+
+    func toggleSpeaker() {
+        let next = !isSpeakerOn
+        isSpeakerOn = next
+        localAudio.setSpeakerEnabled(next)
+    }
+
+    func sendDtmfIfInSipCall(_ digit: String) {
+        if isSipCallActive {
+            sipClient.sendDtmf(digit)
+        }
+    }
+
+    func sendSms(recipient: String, body: String, contactName: String = "") {
+        let cleanRecipient = recipient.trimmingCharacters(in: .whitespacesAndNewlines)
+        let cleanBody = body.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleanRecipient.isEmpty, !cleanBody.isEmpty else { return }
+
+        let id = UUID().uuidString
+        let outgoing = RelayedSms(
+            id: id,
+            sender: cleanRecipient,
+            contactName: contactName,
+            body: cleanBody,
+            otp: "",
+            ts: Int64(Date().timeIntervalSince1970 * 1000),
+            isOutgoing: true,
+            deliveryStatus: "sending",
+            errorDetail: nil
+        )
+        messages.insert(outgoing, at: 0)
+        if messages.count > 150 { messages.removeLast() }
+
+        let dict: [String: Any] = [
+            "type": "SEND_SMS",
+            "id": id,
+            "recipient": cleanRecipient,
+            "body": cleanBody
+        ]
+        sendEncryptedDict(dict)
+        log("Dispatched SEND_SMS to \(cleanRecipient)")
+    }
+
     private func startLocalAudioIfAvailable() {
         guard voiceMode == .localWifi else { return }
+        if audioLinkState == .connected || audioLinkState == .connecting {
+            return
+        }
         let host = activeCall?.wifiIp ?? deviceStatus?.wifiIp ?? ""
         let port = activeCall?.audioPort ?? deviceStatus?.audioPort ?? 54810
         guard !host.isEmpty else {
-            log("Local audio skipped: Android Hotspot IP not available yet")
+            log("Local audio waiting: enable Hotspot or same Wi-Fi on both phones")
             return
         }
-        localAudio.start(host: host, port: port)
+        localAudio.start(host: host, port: port, audioAlreadyActivated: callKit.isAudioSessionActive)
     }
 
     private func loadStoredSession() {
@@ -315,6 +465,7 @@ final class BridgeManager: NSObject, ObservableObject {
         sendEncryptedDict(dict)
         if action == "REJECT" || action == "QUICK_SMS" {
             localAudio.stop()
+            callKit.reportRemoteEnded()
             DispatchQueue.main.async {
                 self.activeCall = nil
             }
@@ -424,9 +575,17 @@ final class BridgeManager: NSObject, ObservableObject {
             case "SMS_RECEIVED":
                 if let sms = try? JSONDecoder().decode(RelayedSms.self, from: plain) {
                     self.messages.insert(sms, at: 0)
-                    if self.messages.count > 100 { self.messages.removeLast() }
+                    if self.messages.count > 150 { self.messages.removeLast() }
                     NotificationManager.shared.notifySms(sms)
                     self.log("SMS from \(sms.displaySender) (OTP=\(sms.otp.isEmpty ? "none" : sms.otp))")
+                }
+            case "SMS_SENT":
+                if let ack = try? JSONDecoder().decode(SmsSentAck.self, from: plain) {
+                    if let idx = self.messages.firstIndex(where: { $0.id == ack.id }) {
+                        self.messages[idx].deliveryStatus = ack.success ? "sent" : "failed"
+                        self.messages[idx].errorDetail = ack.error
+                    }
+                    self.log("SMS delivery to \(ack.recipient): \(ack.success ? "sent" : (ack.error ?? "failed"))")
                 }
             case "CALL_STATE":
                 if let call = try? JSONDecoder().decode(RelayedCall.self, from: plain) {
@@ -440,13 +599,27 @@ final class BridgeManager: NSObject, ObservableObject {
                             NotificationManager.shared.notifyIncomingCall(call)
                         }
                     } else if call.state == "IDLE" {
-                        self.activeCall = nil
-                        self.localAudio.stop()
-                        self.callKit.reportRemoteEnded()
+                        if !self.isSipCallActive {
+                            self.activeCall = nil
+                            self.localAudio.stop()
+                            self.callKit.reportRemoteEnded()
+                        }
                     } else if call.state == "OFFHOOK" {
-                        self.activeCall = call
+                        // Preserve known number/contactName if Android omitted it on second broadcast
+                        let existing = self.activeCall
+                        let merged = RelayedCall(
+                            id: call.id,
+                            state: "OFFHOOK",
+                            number: call.number.isEmpty ? (existing?.number ?? "") : call.number,
+                            contactName: call.contactName.isEmpty ? (existing?.contactName ?? "") : call.contactName,
+                            wifiIp: call.wifiIp ?? existing?.wifiIp,
+                            audioPort: call.audioPort ?? existing?.audioPort,
+                            ts: call.ts
+                        )
+                        self.activeCall = merged
                         if self.voiceMode == .localWifi {
                             self.callKit.reportOutgoingConnected()
+                            self.startLocalAudioIfAvailable()
                         }
                     }
                     self.log("CALL_STATE: \(call.state) (\(call.displayCaller))")

@@ -7,17 +7,21 @@ final class CallKitManager: NSObject, CXProviderDelegate {
 
     private let provider: CXProvider
     private let callController = CXCallController()
-    private var activeCallUUID: UUID?
+    private(set) var activeCallUUID: UUID?
+    private(set) var isAudioSessionActive = false
 
     var onAnswerCall: ((UUID) -> Void)?
     var onEndCall: ((UUID) -> Void)?
     var onStartOutgoingCall: ((UUID, String) -> Void)?
+    var onMuteChanged: ((Bool) -> Void)?
     var onAudioSessionActivated: (() -> Void)?
+    var onAudioSessionDeactivated: (() -> Void)?
     var onLog: ((String) -> Void)?
 
     override init() {
         let config = CXProviderConfiguration()
         config.supportsVideo = false
+        config.maximumCallGroups = 1
         config.maximumCallsPerCallGroup = 1
         config.supportedHandleTypes = [.phoneNumber, .generic]
         config.includesCallsInRecents = true
@@ -28,11 +32,18 @@ final class CallKitManager: NSObject, CXProviderDelegate {
     }
 
     func reportIncomingCall(handle: String, displayName: String, completion: ((UUID?) -> Void)? = nil) {
+        if let existing = activeCallUUID {
+            onLog?("CallKit already tracking call \(existing.uuidString)")
+            completion?(existing)
+            return
+        }
         let uuid = UUID()
         let update = CXCallUpdate()
         update.remoteHandle = CXHandle(type: .phoneNumber, value: handle.isEmpty ? "Unknown" : handle)
         update.localizedCallerName = displayName
         update.hasVideo = false
+        update.supportsDTMF = true
+        update.supportsHolding = false
 
         activeCallUUID = uuid
         provider.reportNewIncomingCall(with: uuid, update: update) { [weak self] error in
@@ -47,7 +58,20 @@ final class CallKitManager: NSObject, CXProviderDelegate {
         }
     }
 
+    func answerActiveCall() {
+        guard let uuid = activeCallUUID else { return }
+        let action = CXAnswerCallAction(call: uuid)
+        callController.request(CXTransaction(action: action)) { [weak self] error in
+            if let error {
+                self?.onLog?("CallKit answer error: \(error.localizedDescription)")
+            }
+        }
+    }
+
     func startOutgoingCall(handle: String, displayName: String) {
+        if activeCallUUID != nil {
+            endActiveCall()
+        }
         let uuid = UUID()
         activeCallUUID = uuid
         let cxHandle = CXHandle(type: .phoneNumber, value: handle)
@@ -61,6 +85,16 @@ final class CallKitManager: NSObject, CXProviderDelegate {
                 self?.activeCallUUID = nil
             } else {
                 self?.provider.reportOutgoingCall(with: uuid, startedConnectingAt: Date())
+            }
+        }
+    }
+
+    func setMuted(_ muted: Bool) {
+        guard let uuid = activeCallUUID else { return }
+        let action = CXSetMutedCallAction(call: uuid, muted: muted)
+        callController.request(CXTransaction(action: action)) { [weak self] error in
+            if let error {
+                self?.onLog?("CallKit mute error: \(error.localizedDescription)")
             }
         }
     }
@@ -86,39 +120,61 @@ final class CallKitManager: NSObject, CXProviderDelegate {
         guard let uuid = activeCallUUID else { return }
         provider.reportCall(with: uuid, endedAt: Date(), reason: .remoteEnded)
         activeCallUUID = nil
+        isAudioSessionActive = false
     }
 
     // MARK: - CXProviderDelegate
 
     func providerDidReset(_ provider: CXProvider) {
         activeCallUUID = nil
+        isAudioSessionActive = false
+        onAudioSessionDeactivated?()
     }
 
     func provider(_ provider: CXProvider, perform action: CXStartCallAction) {
-        configureAudioSession()
+        configureAudioCategoryOnly()
         onStartOutgoingCall?(action.callUUID, action.handle.value)
         action.fulfill()
     }
 
     func provider(_ provider: CXProvider, perform action: CXAnswerCallAction) {
-        configureAudioSession()
+        configureAudioCategoryOnly()
         onAnswerCall?(action.callUUID)
+        action.fulfill()
+    }
+
+    func provider(_ provider: CXProvider, perform action: CXSetMutedCallAction) {
+        onMuteChanged?(action.isMuted)
         action.fulfill()
     }
 
     func provider(_ provider: CXProvider, perform action: CXEndCallAction) {
         onEndCall?(action.callUUID)
         activeCallUUID = nil
+        isAudioSessionActive = false
         action.fulfill()
     }
 
     func provider(_ provider: CXProvider, didActivate audioSession: AVAudioSession) {
+        isAudioSessionActive = true
+        onLog?("CallKit AVAudioSession activated")
         onAudioSessionActivated?()
     }
 
-    private func configureAudioSession() {
+    func provider(_ provider: CXProvider, didDeactivate audioSession: AVAudioSession) {
+        isAudioSessionActive = false
+        onLog?("CallKit AVAudioSession deactivated")
+        onAudioSessionDeactivated?()
+    }
+
+    private func configureAudioCategoryOnly() {
         let session = AVAudioSession.sharedInstance()
-        try? session.setCategory(.playAndRecord, mode: .voiceChat, options: [.allowBluetooth, .defaultToSpeaker])
-        try? session.setActive(true)
+        try? session.setCategory(
+            .playAndRecord,
+            mode: .voiceChat,
+            options: [.allowBluetooth, .allowBluetoothA2DP]
+        )
+        try? session.setPreferredSampleRate(16000)
+        try? session.setPreferredIOBufferDuration(0.02)
     }
 }

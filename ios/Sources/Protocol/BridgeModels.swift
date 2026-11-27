@@ -51,10 +51,26 @@ struct RelayedSms: Identifiable, Codable, Equatable {
     let body: String
     let otp: String
     let ts: Int64
+    var isOutgoing: Bool?
+    var deliveryStatus: String?
+    var errorDetail: String?
+
+    var isOutgoingMessage: Bool {
+        isOutgoing == true
+    }
 
     var displaySender: String {
         contactName.isEmpty ? sender : contactName
     }
+}
+
+struct SmsSentAck: Codable {
+    let id: String
+    let recipient: String
+    let body: String
+    let success: Bool
+    let error: String?
+    let ts: Int64
 }
 
 struct RelayedCall: Identifiable, Codable, Equatable {
@@ -76,6 +92,14 @@ enum VoiceCallMode: String, Codable, CaseIterable {
     case localWifi = "local_wifi"
     case sip = "sip"
     case remoteOnly = "remote_only"
+}
+
+enum LocalAudioState: String, Equatable {
+    case idle
+    case connecting
+    case connected
+    case reconnecting
+    case failed
 }
 
 struct SipAccountConfig: Codable, Equatable {

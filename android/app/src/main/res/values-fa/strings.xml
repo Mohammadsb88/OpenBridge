@@ -39,6 +39,8 @@
     <string name="btn_enable_forward">فعال‌سازی دایورت (*21*)</string>
     <string name="btn_disable_forward">لغو دایورت (#21#)</string>
     <string name="btn_grant_shizuku">اتصال به Shizuku</string>
+    <string name="auto_speaker_title">اسپیکر خودکار در حالت استاندارد</string>
+    <string name="auto_speaker_sub">برای انتقال دوطرفه صدا بدون Root اسپیکر را با حذف اکو فعال می‌کند</string>
 
     <string name="activity_empty">هنوز پیامک یا تماسی ثبت نشده است.</string>
     <string name="otp_label">کد تایید: %1$s</string>
