@@ -52,6 +52,8 @@ jobs:
             build
           mkdir -p Payload
           cp -R build/Build/Products/Debug-iphoneos/OpenBridge.app Payload/
+          ls -la Payload/OpenBridge.app/
+          test -f Payload/OpenBridge.app/Assets.car
           zip -qry OpenBridge-unsigned.ipa Payload
 
       - name: Upload Unsigned IPA
