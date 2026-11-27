@@ -910,22 +910,17 @@ final class SipClient {
             pcm = -pcm - 1
         }
         if pcm > 32635 { pcm = 32635 }
+        let segEnds = [0xFF, 0x1FF, 0x3FF, 0x7FF, 0xFFF, 0x1FFF, 0x3FFF, 0x7FFF]
         var seg = 0
-        let segEnds = [0x1F, 0x3F, 0x7F, 0xFF, 0x1FF, 0x3FF, 0x7FF, 0xFFF]
-        var val = pcm >> 4
-        if pcm >= 256 {
-            val = pcm
-            while seg < 8 && val > segEnds[seg] { seg += 1 }
-        } else {
-            seg = 0
-            val = pcm >> 4
+        while seg < 8 && pcm > segEnds[seg] {
+            seg += 1
         }
-        if pcm >= 256 {
-            let aval = ((seg & 0x07) << 4) | ((pcm >> (seg + 3)) & 0x0F)
-            return UInt8((aval ^ mask) & 0xFF)
-        } else {
-            return UInt8(((val & 0x0F) ^ mask) & 0xFF)
+        if seg >= 8 {
+            return UInt8((0x7F ^ mask) & 0xFF)
         }
+        let shift = (seg < 2) ? 4 : (seg + 3)
+        let aval = (seg << 4) | ((pcm >> shift) & 0x0F)
+        return UInt8((aval ^ mask) & 0xFF)
     }
 
     static func alawToLinear(_ byte: UInt8) -> Int16 {
