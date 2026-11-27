@@ -41,7 +41,8 @@ object BridgeModels {
         charging: Boolean,
         signal: Int,
         networkType: String,
-        operatorName: String
+        operatorName: String,
+        wifiIp: String = ""
     ): String {
         return JSONObject()
             .put("type", "DEVICE_STATUS")
@@ -50,6 +51,8 @@ object BridgeModels {
             .put("signal", signal)
             .put("networkType", networkType)
             .put("operator", operatorName)
+            .put("wifiIp", wifiIp)
+            .put("audioPort", BridgeConstants.LOCAL_AUDIO_PORT)
             .put("ts", System.currentTimeMillis())
             .toString()
     }
@@ -78,7 +81,8 @@ object BridgeModels {
         state: String,
         number: String,
         contactName: String?,
-        ts: Long
+        ts: Long,
+        wifiIp: String = ""
     ): String {
         return JSONObject()
             .put("type", "CALL_STATE")
@@ -86,6 +90,8 @@ object BridgeModels {
             .put("state", state)
             .put("number", number)
             .put("contactName", contactName ?: "")
+            .put("wifiIp", wifiIp)
+            .put("audioPort", BridgeConstants.LOCAL_AUDIO_PORT)
             .put("ts", ts)
             .toString()
     }

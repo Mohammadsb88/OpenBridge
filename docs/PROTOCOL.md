@@ -93,6 +93,8 @@ Because BLE characteristics split writes/notifications according to the negotiat
   "signal": 3,
   "networkType": "4G",
   "operator": "Irancell",
+  "wifiIp": "192.168.43.1",
+  "audioPort": 54810,
   "ts": 1732480000000
 }
 ```
@@ -118,6 +120,8 @@ Because BLE characteristics split writes/notifications according to the negotiat
   "state": "RINGING",
   "number": "+989120000000",
   "contactName": "Ali",
+  "wifiIp": "192.168.43.1",
+  "audioPort": 54810,
   "ts": 1732480000000
 }
 ```
@@ -127,17 +131,24 @@ Because BLE characteristics split writes/notifications according to the negotiat
 ```json
 {
   "type": "CALL_ACTION",
-  "action": "REJECT",
+  "action": "ACCEPT",
   "number": "+989120000000",
   "smsBody": "I can't talk right now, I'll call you back."
 }
 ```
-`action` values: `REJECT`, `SILENCE`, `QUICK_SMS`.
+`action` values: `ACCEPT`, `REJECT`, `SILENCE`, `QUICK_SMS`.
 
 ### `DIAL_REQUEST` (iOS -> Android)
 ```json
 {
   "type": "DIAL_REQUEST",
-  "number": "+989120000000"
+  "number": "+989120000000",
+  "mode": "LOCAL_WIFI"
 }
 ```
+`mode` values: `ANDROID_SIM`, `LOCAL_WIFI`.
+
+## 5. Local Wi-Fi Audio Stream (Optional Port 54810)
+- Transport: TCP stream on Android's Hotspot / local Wi-Fi IP (`wifiIp:54810`).
+- Format: Raw 16-bit signed little-endian PCM, 16,000 Hz, mono (`32,000 bytes/sec`).
+- Both endpoints read and write full-duplex PCM frames once a call is answered (`ACCEPT` / `OFFHOOK`).

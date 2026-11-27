@@ -31,9 +31,13 @@
     <string>OpenBridge uses Bluetooth Low Energy to keep a private encrypted link with your companion Android phone for SMS and call notifications.</string>
     <key>NSCameraUsageDescription</key>
     <string>OpenBridge uses the camera to scan the pairing QR code shown on your companion Android phone.</string>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>OpenBridge uses the microphone for CallKit voice calls via your configured SIP line or local companion bridge.</string>
     <key>UIBackgroundModes</key>
     <array>
         <string>bluetooth-central</string>
+        <string>audio</string>
+        <string>voip</string>
     </array>
     <key>UIApplicationSceneManifest</key>
     <dict>

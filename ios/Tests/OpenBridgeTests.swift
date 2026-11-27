@@ -36,4 +36,13 @@ final class OpenBridgeTests: XCTestCase {
         let decrypted = try BridgeCrypto.decrypt(key: keyB, nonce: nonce, cipherWithTag: cipher)
         XCTAssertEqual(decrypted, msg)
     }
+
+    func testMulawCodecRoundTrip() {
+        let samples: [Int16] = [0, 512, -512, 8192, -16384]
+        for s in samples {
+            let encoded = SipClient.linearToMulaw(s)
+            let decoded = SipClient.mulawToLinear(encoded)
+            XCTAssertLessThan(abs(Int(s) - Int(decoded)), 600)
+        }
+    }
 }

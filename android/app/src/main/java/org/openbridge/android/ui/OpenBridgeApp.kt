@@ -1,8 +1,11 @@
 package org.openbridge.android.ui
 
 import android.graphics.Bitmap
+import androidx.compose.animation.animateColorAsState
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -22,42 +25,62 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.BluetoothSearching
+import androidx.compose.material.icons.filled.BatteryChargingFull
 import androidx.compose.material.icons.filled.BluetoothConnected
-import androidx.compose.material.icons.filled.BluetoothSearching
 import androidx.compose.material.icons.filled.Call
+import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.History
+import androidx.compose.material.icons.filled.PhoneForwarded
+import androidx.compose.material.icons.filled.QrCode2
+import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Sms
+import androidx.compose.material.icons.filled.Terminal
+import androidx.compose.material.icons.filled.WarningAmber
+import androidx.compose.material.icons.filled.Wifi
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilterChipDefaults
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
@@ -72,13 +95,39 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
+private val NavyBg = Color(0xFF0B1020)
+private val SlateCard = Color(0xFF141C33)
+private val SlateCardBorder = Color(0xFF233056)
+private val CyanAccent = Color(0xFF22D3EE)
+private val IndigoAccent = Color(0xFF6366F1)
+private val EmeraldOk = Color(0xFF10B981)
+private val AmberWarn = Color(0xFFF59E0B)
+
+private val OpenBridgeDarkScheme = darkColorScheme(
+    primary = CyanAccent,
+    onPrimary = Color(0xFF06131F),
+    secondary = IndigoAccent,
+    onSecondary = Color.White,
+    background = NavyBg,
+    onBackground = Color(0xFFF1F5F9),
+    surface = SlateCard,
+    onSurface = Color(0xFFF1F5F9),
+    surfaceVariant = Color(0xFF1C2645),
+    onSurfaceVariant = Color(0xFF94A3B8),
+    error = Color(0xFFFB7185)
+)
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun OpenBridgeApp(
     allPermissionsGranted: Boolean,
     missingPermissionsList: List<String>,
+    shizukuReady: Boolean,
+    rootAvailable: Boolean,
     onRequestPermissions: () -> Unit,
     onRequestBatteryUnrestricted: () -> Unit,
+    onRequestShizuku: () -> Unit,
+    onToggleForwarding: (Boolean, String) -> Unit,
     onStartBridge: () -> Unit,
     onStopBridge: () -> Unit,
     onSendTestSms: () -> Unit,
@@ -86,96 +135,152 @@ fun OpenBridgeApp(
     onUnpair: () -> Unit,
     onLanguageChange: (String) -> Unit
 ) {
-    var selectedTab by rememberSaveable { mutableIntStateOf(0) }
-    val connectionState by BridgeStore.connectionState.collectAsState()
-    val pairedPeer by BridgeStore.pairedPeerName.collectAsState()
-    val qrPayload by BridgeStore.qrPayload.collectAsState()
-    val events by BridgeStore.events.collectAsState()
-    val logs by BridgeStore.logs.collectAsState()
-    val currentLanguage by BridgeStore.language.collectAsState()
+    MaterialTheme(colorScheme = OpenBridgeDarkScheme) {
+        var selectedTab by rememberSaveable { mutableIntStateOf(0) }
+        var showQrDialog by remember { mutableStateOf(false) }
+        var showLogsDialog by remember { mutableStateOf(false) }
 
-    Scaffold(
-        topBar = {
-            TopAppBar(
-                title = {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(
-                            text = stringResource(R.string.app_name),
-                            fontWeight = FontWeight.Bold
-                        )
-                        Spacer(Modifier.width(8.dp))
-                        val badgeColor = when (connectionState) {
-                            BleConnectionState.CONNECTED -> Color(0xFF2E7D32)
-                            BleConnectionState.ADVERTISING -> Color(0xFFEF6C00)
-                            BleConnectionState.STOPPED -> Color(0xFF757575)
+        val connectionState by BridgeStore.connectionState.collectAsState()
+        val pairedPeer by BridgeStore.pairedPeerName.collectAsState()
+        val qrPayload by BridgeStore.qrPayload.collectAsState()
+        val events by BridgeStore.events.collectAsState()
+        val logs by BridgeStore.logs.collectAsState()
+        val currentLanguage by BridgeStore.language.collectAsState()
+        val voiceMode by BridgeStore.voiceMode.collectAsState()
+        val forwardSip by BridgeStore.forwardSipNumber.collectAsState()
+        val wifiIp by BridgeStore.wifiIp.collectAsState()
+
+        Scaffold(
+            containerColor = NavyBg,
+            topBar = {
+                TopAppBar(
+                    colors = TopAppBarDefaults.topAppBarColors(containerColor = NavyBg),
+                    title = {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            Image(
+                                painter = painterResource(R.drawable.brand_logo),
+                                contentDescription = "OpenBridge Logo",
+                                modifier = Modifier
+                                    .size(34.dp)
+                                    .clip(RoundedCornerShape(9.dp))
+                            )
+                            Column {
+                                Text(
+                                    text = stringResource(R.string.app_name),
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 18.sp
+                                )
+                                Text(
+                                    text = if (pairedPeer != null) {
+                                        stringResource(R.string.paired_badge, pairedPeer!!)
+                                    } else {
+                                        stringResource(R.string.not_paired_badge)
+                                    },
+                                    fontSize = 11.sp,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
                         }
-                        Box(
-                            modifier = Modifier
-                                .size(10.dp)
-                                .clip(CircleShape)
-                                .background(badgeColor)
-                        )
-                    }
-                }
-            )
-        },
-        bottomBar = {
-            NavigationBar {
-                NavigationBarItem(
-                    selected = selectedTab == 0,
-                    onClick = { selectedTab = 0 },
-                    icon = {
-                        Icon(
-                            if (connectionState == BleConnectionState.CONNECTED) {
-                                Icons.Default.BluetoothConnected
-                            } else {
-                                Icons.Default.BluetoothSearching
-                            },
-                            contentDescription = null
-                        )
                     },
-                    label = { Text(stringResource(R.string.tab_bridge)) }
+                    actions = {
+                        IconButton(onClick = { showQrDialog = true }) {
+                            Icon(Icons.Default.QrCode2, contentDescription = "QR", tint = CyanAccent)
+                        }
+                    }
                 )
-                NavigationBarItem(
-                    selected = selectedTab == 1,
-                    onClick = { selectedTab = 1 },
-                    icon = { Icon(Icons.Default.History, contentDescription = null) },
-                    label = { Text(stringResource(R.string.tab_activity)) }
+            },
+            bottomBar = {
+                NavigationBar(containerColor = SlateCard) {
+                    val itemColors = NavigationBarItemDefaults.colors(
+                        selectedIconColor = CyanAccent,
+                        selectedTextColor = CyanAccent,
+                        indicatorColor = CyanAccent.copy(alpha = 0.14f)
+                    )
+                    NavigationBarItem(
+                        selected = selectedTab == 0,
+                        onClick = { selectedTab = 0 },
+                        colors = itemColors,
+                        icon = {
+                            Icon(
+                                if (connectionState == BleConnectionState.CONNECTED) {
+                                    Icons.Default.BluetoothConnected
+                                } else {
+                                    Icons.AutoMirrored.Filled.BluetoothSearching
+                                },
+                                contentDescription = null
+                            )
+                        },
+                        label = { Text(stringResource(R.string.tab_bridge)) }
+                    )
+                    NavigationBarItem(
+                        selected = selectedTab == 1,
+                        onClick = { selectedTab = 1 },
+                        colors = itemColors,
+                        icon = { Icon(Icons.Default.History, contentDescription = null) },
+                        label = { Text(stringResource(R.string.tab_activity)) }
+                    )
+                    NavigationBarItem(
+                        selected = selectedTab == 2,
+                        onClick = { selectedTab = 2 },
+                        colors = itemColors,
+                        icon = { Icon(Icons.Default.Settings, contentDescription = null) },
+                        label = { Text(stringResource(R.string.tab_settings)) }
+                    )
+                }
+            }
+        ) { padding ->
+            when (selectedTab) {
+                0 -> BridgeHomeTab(
+                    modifier = Modifier.padding(padding),
+                    connectionState = connectionState,
+                    pairedPeer = pairedPeer,
+                    wifiIp = wifiIp,
+                    allPermissionsGranted = allPermissionsGranted,
+                    missingPermissionsList = missingPermissionsList,
+                    onRequestPermissions = onRequestPermissions,
+                    onRequestBatteryUnrestricted = onRequestBatteryUnrestricted,
+                    onShowQr = { showQrDialog = true },
+                    onStartBridge = onStartBridge,
+                    onStopBridge = onStopBridge,
+                    onSendTestSms = onSendTestSms,
+                    onSendTestCall = onSendTestCall
                 )
-                NavigationBarItem(
-                    selected = selectedTab == 2,
-                    onClick = { selectedTab = 2 },
-                    icon = { Icon(Icons.Default.Settings, contentDescription = null) },
-                    label = { Text(stringResource(R.string.tab_settings)) }
+                1 -> ActivityTab(
+                    modifier = Modifier.padding(padding),
+                    events = events
+                )
+                else -> SettingsTab(
+                    modifier = Modifier.padding(padding),
+                    currentLanguage = currentLanguage,
+                    voiceMode = voiceMode,
+                    forwardSip = forwardSip,
+                    shizukuReady = shizukuReady,
+                    rootAvailable = rootAvailable,
+                    onLanguageChange = onLanguageChange,
+                    onVoiceModeChange = { BridgeStore.setVoiceMode(it) },
+                    onForwardSipChange = { BridgeStore.setForwardSipNumber(it) },
+                    onRequestShizuku = onRequestShizuku,
+                    onToggleForwarding = onToggleForwarding,
+                    onOpenDiagnostics = { showLogsDialog = true },
+                    onUnpair = onUnpair
                 )
             }
         }
-    ) { padding ->
-        when (selectedTab) {
-            0 -> BridgeHomeTab(
-                modifier = Modifier.padding(padding),
-                connectionState = connectionState,
-                pairedPeer = pairedPeer,
+
+        if (showQrDialog) {
+            QrPairingDialog(
                 qrPayload = qrPayload,
-                allPermissionsGranted = allPermissionsGranted,
-                missingPermissionsList = missingPermissionsList,
-                onRequestPermissions = onRequestPermissions,
-                onRequestBatteryUnrestricted = onRequestBatteryUnrestricted,
-                onStartBridge = onStartBridge,
-                onStopBridge = onStopBridge,
-                onSendTestSms = onSendTestSms,
-                onSendTestCall = onSendTestCall
+                onDismiss = { showQrDialog = false }
             )
-            1 -> ActivityTab(
-                modifier = Modifier.padding(padding),
-                events = events
-            )
-            else -> SettingsAndLogsTab(
-                modifier = Modifier.padding(padding),
+        }
+
+        if (showLogsDialog) {
+            DiagnosticsDialog(
                 logs = logs,
-                currentLanguage = currentLanguage,
-                onLanguageChange = onLanguageChange,
-                onUnpair = onUnpair
+                onDismiss = { showLogsDialog = false }
             )
         }
     }
@@ -186,18 +291,30 @@ private fun BridgeHomeTab(
     modifier: Modifier,
     connectionState: BleConnectionState,
     pairedPeer: String?,
-    qrPayload: String,
+    wifiIp: String,
     allPermissionsGranted: Boolean,
     missingPermissionsList: List<String>,
     onRequestPermissions: () -> Unit,
     onRequestBatteryUnrestricted: () -> Unit,
+    onShowQr: () -> Unit,
     onStartBridge: () -> Unit,
     onStopBridge: () -> Unit,
     onSendTestSms: () -> Unit,
     onSendTestCall: () -> Unit
 ) {
-    val clipboard = LocalClipboardManager.current
-    val qrBitmap: Bitmap? = remember(qrPayload) { QrGenerator.generate(qrPayload, 520) }
+    val accentColor by animateColorAsState(
+        targetValue = when (connectionState) {
+            BleConnectionState.CONNECTED -> EmeraldOk
+            BleConnectionState.ADVERTISING -> AmberWarn
+            BleConnectionState.STOPPED -> Color(0xFF64748B)
+        },
+        label = "status_color"
+    )
+    val statusText = when (connectionState) {
+        BleConnectionState.CONNECTED -> stringResource(R.string.status_connected)
+        BleConnectionState.ADVERTISING -> stringResource(R.string.status_advertising)
+        BleConnectionState.STOPPED -> stringResource(R.string.status_stopped)
+    }
 
     Column(
         modifier = modifier
@@ -206,117 +323,158 @@ private fun BridgeHomeTab(
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
-        // Status Card
-        val statusColor = when (connectionState) {
-            BleConnectionState.CONNECTED -> Color(0xFFE8F5E9)
-            BleConnectionState.ADVERTISING -> Color(0xFFFFF3E0)
-            BleConnectionState.STOPPED -> MaterialTheme.colorScheme.surfaceVariant
-        }
-        val statusText = when (connectionState) {
-            BleConnectionState.CONNECTED -> stringResource(R.string.status_connected)
-            BleConnectionState.ADVERTISING -> stringResource(R.string.status_advertising)
-            BleConnectionState.STOPPED -> stringResource(R.string.status_stopped)
-        }
-        Card(
-            colors = CardDefaults.cardColors(containerColor = statusColor),
-            shape = RoundedCornerShape(16.dp),
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text(statusText, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-                Text(
-                    text = if (pairedPeer != null) {
-                        stringResource(R.string.paired_badge, pairedPeer)
-                    } else {
-                        stringResource(R.string.not_paired_badge)
-                    },
-                    style = MaterialTheme.typography.bodyMedium
+        // Hero Gradient Card
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(22.dp))
+                .background(
+                    Brush.linearGradient(
+                        listOf(Color(0xFF172554), Color(0xFF1E1B4B), SlateCard)
+                    )
                 )
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    if (connectionState == BleConnectionState.STOPPED) {
-                        Button(onClick = onStartBridge, modifier = Modifier.weight(1f)) {
-                            Text(stringResource(R.string.btn_start_bridge))
-                        }
-                    } else {
-                        OutlinedButton(onClick = onStopBridge, modifier = Modifier.weight(1f)) {
-                            Text(stringResource(R.string.btn_stop_bridge))
-                        }
-                    }
-                }
-            }
-        }
-
-        // Permissions Card
-        Card(shape = RoundedCornerShape(16.dp), modifier = Modifier.fillMaxWidth()) {
-            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text(stringResource(R.string.permissions_title), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-                if (allPermissionsGranted) {
-                    Text(
-                        stringResource(R.string.permissions_all_ok),
-                        color = Color(0xFF2E7D32),
-                        style = MaterialTheme.typography.bodyMedium
-                    )
-                } else {
-                    Text(
-                        "${stringResource(R.string.permissions_missing)}: ${missingPermissionsList.joinToString(", ")}",
-                        color = MaterialTheme.colorScheme.error,
-                        style = MaterialTheme.typography.bodySmall
-                    )
-                    Button(onClick = onRequestPermissions, modifier = Modifier.fillMaxWidth()) {
-                        Text(stringResource(R.string.btn_grant_permissions))
-                    }
-                }
-                OutlinedButton(onClick = onRequestBatteryUnrestricted, modifier = Modifier.fillMaxWidth()) {
-                    Text(stringResource(R.string.btn_battery_optimization))
-                }
-            }
-        }
-
-        // QR Code Pairing Card
-        Card(shape = RoundedCornerShape(16.dp), modifier = Modifier.fillMaxWidth()) {
-            Column(
-                Modifier
-                    .padding(16.dp)
-                    .fillMaxWidth(),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(10.dp)
-            ) {
+                .border(1.dp, accentColor.copy(alpha = 0.5f), RoundedCornerShape(22.dp))
+                .padding(18.dp)
+        ) {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Row(
-                    Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
-                    Text(stringResource(R.string.qr_title), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-                    IconButton(onClick = { clipboard.setText(AnnotatedString(qrPayload)) }) {
-                        Icon(Icons.Default.ContentCopy, contentDescription = "Copy QR")
-                    }
-                }
-                Text(stringResource(R.string.qr_subtitle), style = MaterialTheme.typography.bodySmall)
-                if (qrBitmap != null) {
                     Box(
                         modifier = Modifier
-                            .clip(RoundedCornerShape(12.dp))
-                            .background(Color.White)
-                            .padding(10.dp)
+                            .size(12.dp)
+                            .clip(CircleShape)
+                            .background(accentColor)
+                    )
+                    Text(
+                        text = statusText,
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+
+                if (wifiIp.isNotBlank()) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
-                        Image(
-                            bitmap = qrBitmap.asImageBitmap(),
-                            contentDescription = "Pairing QR Code",
-                            modifier = Modifier.size(210.dp)
+                        Icon(Icons.Default.Wifi, contentDescription = null, tint = CyanAccent, modifier = Modifier.size(16.dp))
+                        Text(
+                            text = "Hotspot Audio IP: $wifiIp",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = CyanAccent
                         )
                     }
                 }
+
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
+                    if (connectionState == BleConnectionState.STOPPED) {
+                        Button(
+                            onClick = onStartBridge,
+                            modifier = Modifier.weight(1f),
+                            shape = RoundedCornerShape(14.dp)
+                        ) {
+                            Text(stringResource(R.string.btn_start_bridge), fontWeight = FontWeight.SemiBold)
+                        }
+                    } else {
+                        OutlinedButton(
+                            onClick = onStopBridge,
+                            modifier = Modifier.weight(1f),
+                            shape = RoundedCornerShape(14.dp)
+                        ) {
+                            Text(stringResource(R.string.btn_stop_bridge))
+                        }
+                    }
+                    OutlinedButton(
+                        onClick = onShowQr,
+                        shape = RoundedCornerShape(14.dp)
+                    ) {
+                        Icon(Icons.Default.QrCode2, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text(stringResource(R.string.btn_show_qr), fontSize = 12.sp)
+                    }
+                }
             }
         }
 
-        // Self-Test Controls
-        if (connectionState == BleConnectionState.CONNECTED) {
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-                OutlinedButton(onClick = onSendTestSms, modifier = Modifier.weight(1f)) {
-                    Text(stringResource(R.string.btn_test_sms), fontSize = 12.sp)
+        // Permissions / Health Card
+        Card(
+            shape = RoundedCornerShape(18.dp),
+            colors = CardDefaults.cardColors(containerColor = SlateCard),
+            modifier = Modifier
+                .fillMaxWidth()
+                .border(1.dp, SlateCardBorder, RoundedCornerShape(18.dp))
+        ) {
+            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Icon(
+                        imageVector = if (allPermissionsGranted) Icons.Default.CheckCircle else Icons.Default.WarningAmber,
+                        contentDescription = null,
+                        tint = if (allPermissionsGranted) EmeraldOk else AmberWarn
+                    )
+                    Text(
+                        text = stringResource(R.string.permissions_title),
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.SemiBold
+                    )
                 }
-                OutlinedButton(onClick = onSendTestCall, modifier = Modifier.weight(1f)) {
-                    Text(stringResource(R.string.btn_test_call), fontSize = 12.sp)
+
+                Text(
+                    text = if (allPermissionsGranted) {
+                        stringResource(R.string.permissions_all_ok)
+                    } else {
+                        "${stringResource(R.string.permissions_missing)} (${missingPermissionsList.take(4).joinToString(", ")})"
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                    if (!allPermissionsGranted) {
+                        Button(
+                            onClick = onRequestPermissions,
+                            modifier = Modifier.weight(1f),
+                            shape = RoundedCornerShape(12.dp)
+                        ) {
+                            Text(stringResource(R.string.btn_grant_permissions), fontSize = 12.sp)
+                        }
+                    }
+                    OutlinedButton(
+                        onClick = onRequestBatteryUnrestricted,
+                        modifier = Modifier.weight(1f),
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        Icon(Icons.Default.BatteryChargingFull, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(Modifier.width(4.dp))
+                        Text(stringResource(R.string.btn_battery_optimization), fontSize = 12.sp)
+                    }
+                }
+            }
+        }
+
+        // Quick Test Card when connected
+        if (connectionState == BleConnectionState.CONNECTED) {
+            Card(
+                shape = RoundedCornerShape(18.dp),
+                colors = CardDefaults.cardColors(containerColor = SlateCard),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .border(1.dp, SlateCardBorder, RoundedCornerShape(18.dp))
+            ) {
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("Quick Test", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                        OutlinedButton(onClick = onSendTestSms, modifier = Modifier.weight(1f), shape = RoundedCornerShape(12.dp)) {
+                            Text(stringResource(R.string.btn_test_sms), fontSize = 12.sp)
+                        }
+                        OutlinedButton(onClick = onSendTestCall, modifier = Modifier.weight(1f), shape = RoundedCornerShape(12.dp)) {
+                            Text(stringResource(R.string.btn_test_call), fontSize = 12.sp)
+                        }
+                    }
                 }
             }
         }
@@ -328,7 +486,7 @@ private fun ActivityTab(modifier: Modifier, events: List<RelayedEvent>) {
     val timeFmt = remember { SimpleDateFormat("HH:mm:ss", Locale.US) }
     if (events.isEmpty()) {
         Box(modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-            Text(stringResource(R.string.activity_empty))
+            Text(stringResource(R.string.activity_empty), color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
         return
     }
@@ -338,32 +496,55 @@ private fun ActivityTab(modifier: Modifier, events: List<RelayedEvent>) {
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
         items(events, key = { it.id }) { event ->
-            Card(shape = RoundedCornerShape(14.dp), modifier = Modifier.fillMaxWidth()) {
+            Card(
+                shape = RoundedCornerShape(16.dp),
+                colors = CardDefaults.cardColors(containerColor = SlateCard),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .border(1.dp, SlateCardBorder, RoundedCornerShape(16.dp))
+            ) {
                 Row(
                     Modifier.padding(14.dp),
                     verticalAlignment = Alignment.Top,
                     horizontalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
-                    Icon(
-                        imageVector = if (event.kind == "SMS") Icons.Default.Sms else Icons.Default.Call,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.primary
-                    )
+                    Box(
+                        modifier = Modifier
+                            .size(38.dp)
+                            .clip(CircleShape)
+                            .background(CyanAccent.copy(alpha = 0.14f)),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = if (event.kind == "SMS") Icons.Default.Sms else Icons.Default.Call,
+                            contentDescription = null,
+                            tint = CyanAccent,
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
                     Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                             Text(event.title, fontWeight = FontWeight.SemiBold)
                             Text(
                                 timeFmt.format(Date(event.timestamp)),
-                                style = MaterialTheme.typography.labelSmall
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         }
-                        Text(event.subtitle, style = MaterialTheme.typography.bodySmall)
+                        Text(event.subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         if (!event.otp.isNullOrBlank()) {
-                            Text(
-                                text = stringResource(R.string.otp_label, event.otp),
-                                fontWeight = FontWeight.Bold,
-                                color = MaterialTheme.colorScheme.primary
-                            )
+                            Surface(
+                                shape = RoundedCornerShape(8.dp),
+                                color = EmeraldOk.copy(alpha = 0.16f)
+                            ) {
+                                Text(
+                                    text = stringResource(R.string.otp_label, event.otp),
+                                    fontWeight = FontWeight.Bold,
+                                    color = EmeraldOk,
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                                    fontSize = 12.sp
+                                )
+                            }
                         }
                     }
                 }
@@ -373,87 +554,239 @@ private fun ActivityTab(modifier: Modifier, events: List<RelayedEvent>) {
 }
 
 @Composable
-private fun SettingsAndLogsTab(
+private fun SettingsTab(
     modifier: Modifier,
-    logs: List<String>,
     currentLanguage: String,
+    voiceMode: String,
+    forwardSip: String,
+    shizukuReady: Boolean,
+    rootAvailable: Boolean,
     onLanguageChange: (String) -> Unit,
+    onVoiceModeChange: (String) -> Unit,
+    onForwardSipChange: (String) -> Unit,
+    onRequestShizuku: () -> Unit,
+    onToggleForwarding: (Boolean, String) -> Unit,
+    onOpenDiagnostics: () -> Unit,
     onUnpair: () -> Unit
 ) {
-    val clipboard = LocalClipboardManager.current
     Column(
         modifier = modifier
             .fillMaxSize()
+            .verticalScroll(rememberScrollState())
             .padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
+        verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
-        Card(shape = RoundedCornerShape(14.dp), modifier = Modifier.fillMaxWidth()) {
-            Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text(stringResource(R.string.language_title), fontWeight = FontWeight.SemiBold)
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    FilterChip(
-                        selected = currentLanguage == "system",
-                        onClick = { onLanguageChange("system") },
-                        label = { Text(stringResource(R.string.lang_system), fontSize = 12.sp) }
-                    )
-                    FilterChip(
-                        selected = currentLanguage == "en",
-                        onClick = { onLanguageChange("en") },
-                        label = { Text(stringResource(R.string.lang_en), fontSize = 12.sp) }
-                    )
-                    FilterChip(
-                        selected = currentLanguage == "fa",
-                        onClick = { onLanguageChange("fa") },
-                        label = { Text(stringResource(R.string.lang_fa), fontSize = 12.sp) }
-                    )
+        // Voice Mode Card
+        Card(
+            shape = RoundedCornerShape(18.dp),
+            colors = CardDefaults.cardColors(containerColor = SlateCard),
+            modifier = Modifier
+                .fillMaxWidth()
+                .border(1.dp, SlateCardBorder, RoundedCornerShape(18.dp))
+        ) {
+            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Icon(Icons.Default.PhoneForwarded, contentDescription = null, tint = CyanAccent)
+                    Text(stringResource(R.string.voice_title), fontWeight = FontWeight.SemiBold)
+                }
+
+                listOf(
+                    "standard" to stringResource(R.string.voice_mode_standard),
+                    "sip" to stringResource(R.string.voice_mode_sip),
+                    "shizuku" to "${stringResource(R.string.voice_mode_shizuku)} (${if (shizukuReady) "Ready" else "Off"})",
+                    "root" to "${stringResource(R.string.voice_mode_root)} (${if (rootAvailable) "su" else "No"})"
+                ).forEach { (id, label) ->
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(10.dp))
+                            .clickable { onVoiceModeChange(id) }
+                            .padding(vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        RadioButton(selected = voiceMode == id, onClick = { onVoiceModeChange(id) })
+                        Text(label, style = MaterialTheme.typography.bodyMedium)
+                    }
+                }
+
+                if (voiceMode == "shizuku" && !shizukuReady) {
+                    OutlinedButton(onClick = onRequestShizuku, modifier = Modifier.fillMaxWidth()) {
+                        Icon(Icons.Default.Security, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text(stringResource(R.string.btn_grant_shizuku))
+                    }
+                }
+
+                HorizontalDivider(color = SlateCardBorder, modifier = Modifier.padding(vertical = 4.dp))
+                OutlinedTextField(
+                    value = forwardSip,
+                    onValueChange = onForwardSipChange,
+                    label = { Text(stringResource(R.string.forward_hint)) },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                    Button(
+                        onClick = { onToggleForwarding(true, forwardSip) },
+                        enabled = forwardSip.isNotBlank(),
+                        modifier = Modifier.weight(1f),
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        Text(stringResource(R.string.btn_enable_forward), fontSize = 11.sp)
+                    }
+                    OutlinedButton(
+                        onClick = { onToggleForwarding(false, "") },
+                        modifier = Modifier.weight(1f),
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        Text(stringResource(R.string.btn_disable_forward), fontSize = 11.sp)
+                    }
                 }
             }
+        }
+
+        // Language Card
+        Card(
+            shape = RoundedCornerShape(18.dp),
+            colors = CardDefaults.cardColors(containerColor = SlateCard),
+            modifier = Modifier
+                .fillMaxWidth()
+                .border(1.dp, SlateCardBorder, RoundedCornerShape(18.dp))
+        ) {
+            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(stringResource(R.string.language_title), fontWeight = FontWeight.SemiBold)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    listOf(
+                        "system" to stringResource(R.string.lang_system),
+                        "en" to stringResource(R.string.lang_en),
+                        "fa" to stringResource(R.string.lang_fa)
+                    ).forEach { (code, label) ->
+                        FilterChip(
+                            selected = currentLanguage == code,
+                            onClick = { onLanguageChange(code) },
+                            colors = FilterChipDefaults.filterChipColors(
+                                selectedContainerColor = CyanAccent.copy(alpha = 0.2f),
+                                selectedLabelColor = CyanAccent
+                            ),
+                            label = { Text(label, fontSize = 12.sp) }
+                        )
+                    }
+                }
+            }
+        }
+
+        // Diagnostics & Unpair
+        OutlinedButton(
+            onClick = onOpenDiagnostics,
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(14.dp)
+        ) {
+            Icon(Icons.Default.Terminal, contentDescription = null, modifier = Modifier.size(18.dp))
+            Spacer(Modifier.width(8.dp))
+            Text(stringResource(R.string.diagnostics_title))
         }
 
         Button(
             onClick = onUnpair,
             colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
-            modifier = Modifier.fillMaxWidth()
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(14.dp)
         ) {
-            Text(stringResource(R.string.btn_unpair))
-        }
-
-        Row(
-            Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Text("Debug Logs", fontWeight = FontWeight.SemiBold)
-            Row {
-                TextButton(onClick = { clipboard.setText(AnnotatedString(logs.joinToString("\n"))) }) {
-                    Text(stringResource(R.string.btn_copy_logs))
-                }
-                TextButton(onClick = { BridgeStore.clearLogs() }) {
-                    Text(stringResource(R.string.btn_clear_logs))
-                }
-            }
-        }
-
-        Card(
-            shape = RoundedCornerShape(12.dp),
-            colors = CardDefaults.cardColors(containerColor = Color(0xFF121212)),
-            modifier = Modifier
-                .fillMaxWidth()
-                .weight(1f)
-        ) {
-            LazyColumn(
-                contentPadding = PaddingValues(10.dp),
-                verticalArrangement = Arrangement.spacedBy(4.dp)
-            ) {
-                items(logs) { line ->
-                    Text(
-                        text = line,
-                        color = Color(0xFFB9F6CA),
-                        fontFamily = FontFamily.Monospace,
-                        fontSize = 11.sp
-                    )
-                }
-            }
+            Text(stringResource(R.string.btn_unpair), color = Color.White)
         }
     }
+}
+
+@Composable
+private fun QrPairingDialog(qrPayload: String, onDismiss: () -> Unit) {
+    val clipboard = LocalClipboardManager.current
+    val qrBitmap: Bitmap? = remember(qrPayload) { QrGenerator.generate(qrPayload, 520) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = SlateCard,
+        title = { Text(stringResource(R.string.qr_title), fontWeight = FontWeight.Bold) },
+        text = {
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Text(
+                    stringResource(R.string.qr_subtitle),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                if (qrBitmap != null) {
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(16.dp))
+                            .background(Color.White)
+                            .padding(12.dp)
+                    ) {
+                        Image(
+                            bitmap = qrBitmap.asImageBitmap(),
+                            contentDescription = "Pairing QR",
+                            modifier = Modifier.size(210.dp)
+                        )
+                    }
+                }
+                TextButton(onClick = { clipboard.setText(AnnotatedString(qrPayload)) }) {
+                    Icon(Icons.Default.ContentCopy, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text("Copy QR JSON")
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) {
+                Text(stringResource(R.string.btn_close))
+            }
+        }
+    )
+}
+
+@Composable
+private fun DiagnosticsDialog(logs: List<String>, onDismiss: () -> Unit) {
+    val clipboard = LocalClipboardManager.current
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = SlateCard,
+        title = { Text(stringResource(R.string.diagnostics_title), fontSize = 16.sp) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Row(horizontalArrangement = Arrangement.End, modifier = Modifier.fillMaxWidth()) {
+                    TextButton(onClick = { clipboard.setText(AnnotatedString(logs.joinToString("\n"))) }) {
+                        Text(stringResource(R.string.btn_copy_logs))
+                    }
+                    TextButton(onClick = { BridgeStore.clearLogs() }) {
+                        Text(stringResource(R.string.btn_clear_logs))
+                    }
+                }
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(280.dp)
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(Color(0xFF070A14))
+                        .padding(10.dp)
+                ) {
+                    LazyColumn(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        items(logs) { line ->
+                            Text(
+                                text = line,
+                                color = Color(0xFF6EE7B7),
+                                fontFamily = FontFamily.Monospace,
+                                fontSize = 10.sp
+                            )
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) {
+                Text(stringResource(R.string.btn_close))
+            }
+        }
+    )
 }

@@ -28,6 +28,8 @@ struct DeviceStatus: Codable, Equatable {
     let signal: Int
     let networkType: String
     let operatorName: String
+    let wifiIp: String?
+    let audioPort: Int?
     let ts: Int64
 
     enum CodingKeys: String, CodingKey {
@@ -36,6 +38,8 @@ struct DeviceStatus: Codable, Equatable {
         case signal
         case networkType
         case operatorName = "operator"
+        case wifiIp
+        case audioPort
         case ts
     }
 }
@@ -58,10 +62,31 @@ struct RelayedCall: Identifiable, Codable, Equatable {
     let state: String
     let number: String
     let contactName: String
+    let wifiIp: String?
+    let audioPort: Int?
     let ts: Int64
 
     var displayCaller: String {
         if !contactName.isEmpty { return contactName }
         return number.isEmpty ? "Unknown Caller" : number
+    }
+}
+
+enum VoiceCallMode: String, Codable, CaseIterable {
+    case localWifi = "local_wifi"
+    case sip = "sip"
+    case remoteOnly = "remote_only"
+}
+
+struct SipAccountConfig: Codable, Equatable {
+    var server: String = ""
+    var port: Int = 5060
+    var username: String = ""
+    var password: String = ""
+    var displayName: String = "OpenBridge"
+
+    var isConfigured: Bool {
+        !server.trimmingCharacters(in: .whitespaces).isEmpty &&
+        !username.trimmingCharacters(in: .whitespaces).isEmpty
     }
 }

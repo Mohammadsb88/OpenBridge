@@ -14,9 +14,11 @@ object BridgeConstants {
     const val MAX_FRAME_SIZE = 65535
     const val PROTOCOL_VERSION = 1
 
+    const val ACTION_ACCEPT = "ACCEPT"
     const val ACTION_REJECT = "REJECT"
     const val ACTION_SILENCE = "SILENCE"
     const val ACTION_QUICK_SMS = "QUICK_SMS"
+    const val LOCAL_AUDIO_PORT = 54810
 
     const val CALL_RINGING = "RINGING"
     const val CALL_OFFHOOK = "OFFHOOK"

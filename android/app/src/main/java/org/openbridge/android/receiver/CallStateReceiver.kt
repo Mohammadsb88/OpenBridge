@@ -6,6 +6,7 @@ import android.content.Intent
 import android.net.Uri
 import android.provider.ContactsContract
 import android.telephony.TelephonyManager
+import org.openbridge.android.audio.LocalAudioRelayServer
 import org.openbridge.android.data.BridgeStore
 import org.openbridge.android.data.RelayedEvent
 import org.openbridge.android.protocol.BridgeConstants
@@ -42,14 +43,22 @@ class CallStateReceiver : BroadcastReceiver() {
         val ts = System.currentTimeMillis()
         val id = UUID.randomUUID().toString()
 
+        val wifiIp = LocalAudioRelayServer.getLocalWifiOrHotspotIp()
         val payload = BridgeModels.callStateJson(
             id = id,
             state = mappedState,
             number = number,
             contactName = contactName,
-            ts = ts
+            ts = ts,
+            wifiIp = wifiIp
         )
         val sent = BridgeRuntime.sendToIphone(payload)
+
+        if (mappedState == BridgeConstants.CALL_OFFHOOK) {
+            BridgeRuntime.audioRelay?.startListening()
+        } else if (mappedState == BridgeConstants.CALL_IDLE) {
+            BridgeRuntime.audioRelay?.stop()
+        }
 
         if (mappedState == BridgeConstants.CALL_RINGING) {
             BridgeStore.addEvent(

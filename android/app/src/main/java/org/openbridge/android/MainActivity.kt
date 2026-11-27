@@ -13,12 +13,13 @@ import android.os.PowerManager
 import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.core.content.ContextCompat
+import org.openbridge.android.audio.LocalAudioRelayServer
 import org.openbridge.android.data.BridgeStore
 import org.openbridge.android.data.RelayedEvent
 import org.openbridge.android.protocol.BridgeConstants
@@ -26,17 +27,24 @@ import org.openbridge.android.protocol.BridgeModels
 import org.openbridge.android.service.BridgeForegroundService
 import org.openbridge.android.service.BridgeRuntime
 import org.openbridge.android.ui.OpenBridgeApp
+import rikka.shizuku.Shizuku
 import java.util.Locale
 import java.util.UUID
 
 class MainActivity : ComponentActivity() {
 
     private var missingPermissions by mutableStateOf<List<String>>(emptyList())
+    private var shizukuReady by mutableStateOf(false)
 
     private val permissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) {
         refreshPermissions()
+    }
+
+    private val shizukuListener = Shizuku.OnRequestPermissionResultListener { _, grantResult ->
+        shizukuReady = grantResult == PackageManager.PERMISSION_GRANTED
+        BridgeStore.log("Shizuku permission result granted=$shizukuReady")
     }
 
     override fun attachBaseContext(newBase: Context) {
@@ -46,34 +54,47 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        enableEdgeToEdge()
         super.onCreate(savedInstanceState)
         BridgeStore.init(applicationContext)
         refreshPermissions()
+        shizukuReady = LocalAudioRelayServer.isShizukuReady()
+        runCatching { Shizuku.addRequestPermissionResultListener(shizukuListener) }
 
         setContent {
-            MaterialTheme {
-                OpenBridgeApp(
-                    allPermissionsGranted = missingPermissions.isEmpty(),
-                    missingPermissionsList = missingPermissions.map { it.substringAfterLast('.') },
-                    onRequestPermissions = { requestMissingPermissions() },
-                    onRequestBatteryUnrestricted = { openBatteryOptimizationSettings() },
-                    onStartBridge = { startBridgeIfPermitted() },
-                    onStopBridge = { BridgeForegroundService.stop(this) },
-                    onSendTestSms = { sendTestSms() },
-                    onSendTestCall = { sendTestCall() },
-                    onUnpair = { BridgeStore.unpairAndRotateKeys() },
-                    onLanguageChange = { lang ->
-                        BridgeStore.setLanguage(lang)
-                        recreate()
-                    }
-                )
-            }
+            OpenBridgeApp(
+                allPermissionsGranted = missingPermissions.isEmpty(),
+                missingPermissionsList = missingPermissions.map { it.substringAfterLast('.') },
+                shizukuReady = shizukuReady,
+                rootAvailable = LocalAudioRelayServer.isRootAvailable(),
+                onRequestPermissions = { requestMissingPermissions() },
+                onRequestBatteryUnrestricted = { openBatteryOptimizationSettings() },
+                onRequestShizuku = { requestShizukuPermission() },
+                onToggleForwarding = { enable, targetNumber ->
+                    runCallForwardingCode(enable, targetNumber)
+                },
+                onStartBridge = { startBridgeIfPermitted() },
+                onStopBridge = { BridgeForegroundService.stop(this) },
+                onSendTestSms = { sendTestSms() },
+                onSendTestCall = { sendTestCall() },
+                onUnpair = { BridgeStore.unpairAndRotateKeys() },
+                onLanguageChange = { lang ->
+                    BridgeStore.setLanguage(lang)
+                    recreate()
+                }
+            )
         }
     }
 
     override fun onResume() {
         super.onResume()
         refreshPermissions()
+        shizukuReady = LocalAudioRelayServer.isShizukuReady()
+    }
+
+    override fun onDestroy() {
+        runCatching { Shizuku.removeRequestPermissionResultListener(shizukuListener) }
+        super.onDestroy()
     }
 
     private fun requiredPermissions(): List<String> {
@@ -84,7 +105,8 @@ class MainActivity : ComponentActivity() {
             Manifest.permission.READ_PHONE_STATE,
             Manifest.permission.READ_CALL_LOG,
             Manifest.permission.CALL_PHONE,
-            Manifest.permission.READ_CONTACTS
+            Manifest.permission.READ_CONTACTS,
+            Manifest.permission.RECORD_AUDIO
         )
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             perms.add(Manifest.permission.ANSWER_PHONE_CALLS)
@@ -112,6 +134,38 @@ class MainActivity : ComponentActivity() {
         }
         if (missing.isNotEmpty()) {
             permissionLauncher.launch(missing.toTypedArray())
+        }
+    }
+
+    private fun requestShizukuPermission() {
+        try {
+            if (!Shizuku.pingBinder()) {
+                BridgeStore.log("Shizuku service is not running on this device")
+                return
+            }
+            if (Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED) {
+                shizukuReady = true
+            } else {
+                Shizuku.requestPermission(1001)
+            }
+        } catch (e: Throwable) {
+            BridgeStore.log("Shizuku error: ${e.message}")
+        }
+    }
+
+    private fun runCallForwardingCode(enable: Boolean, targetNumber: String) {
+        val ussd = if (enable) {
+            val clean = targetNumber.trim()
+            if (clean.isEmpty()) return
+            "*21*$clean#"
+        } else {
+            "#21#"
+        }
+        try {
+            val intent = Intent(Intent.ACTION_CALL, Uri.parse("tel:${Uri.encode(ussd)}"))
+            startActivity(intent)
+        } catch (e: Exception) {
+            BridgeStore.log("Call forward USSD failed: ${e.message}")
         }
     }
 
@@ -160,12 +214,14 @@ class MainActivity : ComponentActivity() {
 
     private fun sendTestCall() {
         val id = UUID.randomUUID().toString()
+        val wifiIp = LocalAudioRelayServer.getLocalWifiOrHotspotIp()
         val payload = BridgeModels.callStateJson(
             id = id,
             state = BridgeConstants.CALL_RINGING,
             number = "+989123456789",
             contactName = "Test Caller",
-            ts = System.currentTimeMillis()
+            ts = System.currentTimeMillis(),
+            wifiIp = wifiIp
         )
         val sent = BridgeRuntime.sendToIphone(payload)
         BridgeStore.addEvent(RelayedEvent(id, "CALL", "Test Caller", "RINGING +989123456789"))

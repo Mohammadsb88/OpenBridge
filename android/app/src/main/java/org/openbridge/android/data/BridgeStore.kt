@@ -39,6 +39,8 @@ object BridgeStore {
     private const val KEY_PEER_NAME = "peer_name"
     private const val KEY_SHARED_KEY_B64 = "shared_aes_key"
     private const val KEY_LANGUAGE = "app_language" // "system", "en", "fa"
+    private const val KEY_VOICE_MODE = "voice_mode" // "standard", "shizuku", "root", "sip"
+    private const val KEY_FORWARD_SIP = "forward_sip_number"
 
     @Volatile
     private var prefs: SharedPreferences? = null
@@ -58,6 +60,15 @@ object BridgeStore {
     private val _language = MutableStateFlow("system")
     val language: StateFlow<String> = _language.asStateFlow()
 
+    private val _voiceMode = MutableStateFlow("standard")
+    val voiceMode: StateFlow<String> = _voiceMode.asStateFlow()
+
+    private val _forwardSipNumber = MutableStateFlow("")
+    val forwardSipNumber: StateFlow<String> = _forwardSipNumber.asStateFlow()
+
+    private val _wifiIp = MutableStateFlow("")
+    val wifiIp: StateFlow<String> = _wifiIp.asStateFlow()
+
     private val _qrPayload = MutableStateFlow("")
     val qrPayload: StateFlow<String> = _qrPayload.asStateFlow()
 
@@ -73,6 +84,8 @@ object BridgeStore {
             ensureIdentityKeys(sp)
             _pairedPeerName.value = sp.getString(KEY_PEER_NAME, null)
             _language.value = sp.getString(KEY_LANGUAGE, "system") ?: "system"
+            _voiceMode.value = sp.getString(KEY_VOICE_MODE, "standard") ?: "standard"
+            _forwardSipNumber.value = sp.getString(KEY_FORWARD_SIP, "") ?: ""
             refreshQrPayload(sp)
         }
     }
@@ -142,6 +155,21 @@ object BridgeStore {
     fun setLanguage(lang: String) {
         prefs?.edit()?.putString(KEY_LANGUAGE, lang)?.apply()
         _language.value = lang
+    }
+
+    fun setVoiceMode(mode: String) {
+        prefs?.edit()?.putString(KEY_VOICE_MODE, mode)?.apply()
+        _voiceMode.value = mode
+        log("Voice bridge mode set to: $mode")
+    }
+
+    fun setForwardSipNumber(number: String) {
+        prefs?.edit()?.putString(KEY_FORWARD_SIP, number)?.apply()
+        _forwardSipNumber.value = number
+    }
+
+    fun setWifiIp(ip: String) {
+        _wifiIp.value = ip
     }
 
     fun getSavedLanguage(context: Context): String {

@@ -29,6 +29,7 @@ import kotlinx.coroutines.launch
 import org.json.JSONObject
 import org.openbridge.android.MainActivity
 import org.openbridge.android.R
+import org.openbridge.android.audio.LocalAudioRelayServer
 import org.openbridge.android.ble.BleGattServerManager
 import org.openbridge.android.data.BleConnectionState
 import org.openbridge.android.data.BridgeStore
@@ -38,6 +39,9 @@ import org.openbridge.android.protocol.BridgeModels
 object BridgeRuntime {
     @Volatile
     var gattManager: BleGattServerManager? = null
+
+    @Volatile
+    var audioRelay: LocalAudioRelayServer? = null
 
     fun sendToIphone(plainJson: String): Boolean {
         val mgr = gattManager ?: return false
@@ -89,6 +93,7 @@ class BridgeForegroundService : Service() {
             }
         )
         BridgeRuntime.gattManager = manager
+        BridgeRuntime.audioRelay = LocalAudioRelayServer(applicationContext)
         val started = manager.start()
         if (!started) {
             BridgeStore.log("Stopping service: BLE could not start")
@@ -127,6 +132,8 @@ class BridgeForegroundService : Service() {
         }
         statusJob?.cancel()
         serviceScope.cancel()
+        BridgeRuntime.audioRelay?.stop()
+        BridgeRuntime.audioRelay = null
         BridgeRuntime.gattManager?.stop()
         BridgeRuntime.gattManager = null
         super.onDestroy()
@@ -202,12 +209,16 @@ class BridgeForegroundService : Service() {
             2
         }
 
+        val wifiIp = LocalAudioRelayServer.getLocalWifiOrHotspotIp()
+        BridgeStore.setWifiIp(wifiIp)
+
         val payload = BridgeModels.deviceStatusJson(
             battery = battery,
             charging = charging,
             signal = signal,
             networkType = "Cellular",
-            operatorName = operatorName
+            operatorName = operatorName,
+            wifiIp = wifiIp
         )
         BridgeRuntime.sendToIphone(payload)
     }
@@ -228,7 +239,20 @@ class BridgeForegroundService : Service() {
 
         val telecom = getSystemService(Context.TELECOM_SERVICE) as TelecomManager
         when (action) {
+            BridgeConstants.ACTION_ACCEPT -> {
+                try {
+                    @Suppress("DEPRECATION")
+                    telecom.acceptRingingCall()
+                    BridgeRuntime.audioRelay?.startListening()
+                    BridgeStore.log("Accepted ringing call & started audio relay")
+                } catch (e: SecurityException) {
+                    BridgeStore.log("Missing ANSWER_PHONE_CALLS permission: ${e.message}")
+                } catch (e: Exception) {
+                    BridgeStore.log("acceptRingingCall failed: ${e.message}")
+                }
+            }
             BridgeConstants.ACTION_REJECT -> {
+                BridgeRuntime.audioRelay?.stop()
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
                     try {
                         @Suppress("DEPRECATION")
@@ -276,6 +300,7 @@ class BridgeForegroundService : Service() {
     private fun handleDialRequest(number: String) {
         if (number.isBlank()) return
         BridgeStore.log("Received DIAL_REQUEST: $number")
+        BridgeRuntime.audioRelay?.startListening()
         try {
             val callIntent = Intent(Intent.ACTION_CALL, Uri.parse("tel:${Uri.encode(number)}")).apply {
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
