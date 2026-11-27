@@ -837,7 +837,7 @@ final class SipClient {
         var res: UnsafeMutablePointer<addrinfo>?
         guard getaddrinfo(host, String(port), &hints, &res) == 0, let first = res else { return nil }
         defer { freeaddrinfo(res) }
-        guard let addrPtr = first.ai_addr else { return nil }
+        guard let addrPtr = first.pointee.ai_addr else { return nil }
         return addrPtr.withMemoryRebound(to: sockaddr_in.self, capacity: 1) { $0.pointee }
     }
 
