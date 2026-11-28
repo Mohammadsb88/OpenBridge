@@ -157,12 +157,11 @@ class PrivilegedAudioService() : IPrivilegedAudioService.Stub() {
             }
         }
 
-        val usages = buildList {
-            add(AudioAttributes.USAGE_VOICE_COMMUNICATION to "VOICE_COMM")
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                add(AudioAttributes.USAGE_CALL_ASSISTANT to "CALL_ASSISTANT")
-            }
-        }
+        val usages = listOf<Pair<Int, String>>(
+            AudioAttributes.USAGE_VOICE_COMMUNICATION to "VOICE_COMM",
+            AudioAttributes.USAGE_VOICE_COMMUNICATION_SIGNALLING to "VOICE_SIGNAL",
+            AudioAttributes.USAGE_MEDIA to "MEDIA_TELEPHONY"
+        )
 
         for ((usage, usageName) in usages) {
             for (rate in candidateRates) {
