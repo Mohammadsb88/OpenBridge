@@ -19,6 +19,9 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.lifecycleScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import org.openbridge.android.audio.LocalAudioRelayServer
 import org.openbridge.android.data.BridgeStore
 import org.openbridge.android.data.RelayedEvent
@@ -35,6 +38,8 @@ class MainActivity : ComponentActivity() {
 
     private var missingPermissions by mutableStateOf<List<String>>(emptyList())
     private var shizukuReady by mutableStateOf(false)
+    private var shizukuAlive by mutableStateOf(false)
+    private var compatibilityChecking by mutableStateOf(false)
 
     private val permissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -59,7 +64,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         BridgeStore.init(applicationContext)
         refreshPermissions()
-        shizukuReady = LocalAudioRelayServer.isShizukuReady()
+        refreshShizukuState()
         runCatching { Shizuku.addRequestPermissionResultListener(shizukuListener) }
 
         setContent {
@@ -67,10 +72,14 @@ class MainActivity : ComponentActivity() {
                 allPermissionsGranted = missingPermissions.isEmpty(),
                 missingPermissionsList = missingPermissions.map { it.substringAfterLast('.') },
                 shizukuReady = shizukuReady,
+                shizukuAlive = shizukuAlive,
                 rootAvailable = LocalAudioRelayServer.isRootAvailable(),
+                compatibilityChecking = compatibilityChecking,
                 onRequestPermissions = { requestMissingPermissions() },
                 onRequestBatteryUnrestricted = { openBatteryOptimizationSettings() },
+                onOpenOemAutostart = { openOemAutostartSettings() },
                 onRequestShizuku = { requestShizukuPermission() },
+                onRunCompatibilityCheck = { runAudioCompatibilityCheck() },
                 onToggleForwarding = { enable, targetNumber ->
                     runCallForwardingCode(enable, targetNumber)
                 },
@@ -90,7 +99,26 @@ class MainActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         refreshPermissions()
+        refreshShizukuState()
+    }
+
+    private fun refreshShizukuState() {
+        shizukuAlive = runCatching { Shizuku.pingBinder() }.getOrDefault(false)
         shizukuReady = LocalAudioRelayServer.isShizukuReady()
+    }
+
+    private fun runAudioCompatibilityCheck() {
+        if (compatibilityChecking) return
+        compatibilityChecking = true
+        lifecycleScope.launch(Dispatchers.IO) {
+            try {
+                refreshShizukuState()
+                val relay = BridgeRuntime.audioRelay ?: LocalAudioRelayServer(applicationContext)
+                relay.probeCompatibility()
+            } finally {
+                compatibilityChecking = false
+            }
+        }
     }
 
     override fun onDestroy() {
@@ -194,6 +222,25 @@ class MainActivity : ComponentActivity() {
                 Uri.parse("package:$packageName")
             )
             startActivity(intent)
+        }
+    }
+
+    private fun openOemAutostartSettings() {
+        val candidates = listOf(
+            Intent().setClassName("com.miui.securitycenter", "com.miui.permcenter.autostart.AutoStartManagementActivity"),
+            Intent().setClassName("com.coloros.safecenter", "com.coloros.safecenter.permission.startup.StartupAppListActivity"),
+            Intent().setClassName("com.oppo.safe", "com.oppo.safe.permission.startup.StartupAppListActivity"),
+            Intent().setClassName("com.vivo.permissionmanager", "com.vivo.permissionmanager.activity.BgStartUpManagerActivity"),
+            Intent().setClassName("com.samsung.android.lool", "com.samsung.android.sm.battery.ui.BatteryActivity"),
+            Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$packageName"))
+        )
+        for (intent in candidates) {
+            try {
+                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                startActivity(intent)
+                return
+            } catch (_: Exception) {
+            }
         }
     }
 

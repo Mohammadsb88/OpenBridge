@@ -30,6 +30,17 @@ data class RelayedEvent(
     val timestamp: Long = System.currentTimeMillis()
 )
 
+data class VoiceCapabilityState(
+    val verdict: String, // "two_way_direct", "downlink_only", "fallback_only", "untested"
+    val mode: String,
+    val downlinkOk: Boolean,
+    val uplinkOk: Boolean,
+    val downlinkSource: String,
+    val uplinkLabel: String,
+    val summary: String,
+    val checkedAtMs: Long = System.currentTimeMillis()
+)
+
 object BridgeStore {
     private const val PREFS_NAME = "openbridge_prefs"
     private const val KEY_DEVICE_ID = "device_id"
@@ -75,6 +86,12 @@ object BridgeStore {
 
     private val _qrPayload = MutableStateFlow("")
     val qrPayload: StateFlow<String> = _qrPayload.asStateFlow()
+
+    private val _voiceCapability = MutableStateFlow<VoiceCapabilityState?>(null)
+    val voiceCapability: StateFlow<VoiceCapabilityState?> = _voiceCapability.asStateFlow()
+
+    private val _activeAudioTransport = MutableStateFlow("")
+    val activeAudioTransport: StateFlow<String> = _activeAudioTransport.asStateFlow()
 
     private val timeFormat = SimpleDateFormat("HH:mm:ss", Locale.US)
 
@@ -175,6 +192,14 @@ object BridgeStore {
 
     fun setWifiIp(ip: String) {
         _wifiIp.value = ip
+    }
+
+    fun setVoiceCapability(state: VoiceCapabilityState) {
+        _voiceCapability.value = state
+    }
+
+    fun setActiveAudioTransport(transport: String) {
+        _activeAudioTransport.value = transport
     }
 
     fun setAutoSpeaker(enabled: Boolean) {

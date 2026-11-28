@@ -106,6 +106,49 @@ object BridgeCrypto {
         return cipher.doFinal(ciphertext)
     }
 
+    /**
+     * Seals an 86-byte IMA-ADPCM frame into a compact 111-byte BLE audio wire packet:
+     * dir(1B) || counter_u64_be(8B) || AES-256-GCM(key, nonce=("OBA2"/"OBI2" || counter_u64_be), plaintext)
+     */
+    fun sealAudioPacket(key: ByteArray, direction: Byte, counter: Long, plaintext: ByteArray): ByteArray {
+        require(key.size == 32) { "AES-256 key must be 32 bytes" }
+        val nonce = buildAudioNonce(direction, counter)
+        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+        cipher.init(Cipher.ENCRYPT_MODE, SecretKeySpec(key, "AES"), GCMParameterSpec(128, nonce))
+        val sealed = cipher.doFinal(plaintext)
+        val packet = ByteArray(1 + 8 + sealed.size)
+        packet[0] = direction
+        for (i in 0 until 8) {
+            packet[1 + i] = ((counter ushr (56 - i * 8)) and 0xFFL).toByte()
+        }
+        System.arraycopy(sealed, 0, packet, 9, sealed.size)
+        return packet
+    }
+
+    fun openAudioPacket(key: ByteArray, expectedDirection: Byte, packet: ByteArray): ByteArray? {
+        if (key.size != 32 || packet.size < 1 + 8 + 16) return null
+        if (packet[0] != expectedDirection) return null
+        var counter = 0L
+        for (i in 0 until 8) {
+            counter = (counter shl 8) or (packet[1 + i].toLong() and 0xFFL)
+        }
+        val nonce = buildAudioNonce(expectedDirection, counter)
+        val ciphertext = packet.copyOfRange(9, packet.size)
+        return runCatching { decrypt(key, nonce, ciphertext) }.getOrNull()
+    }
+
+    private fun buildAudioNonce(direction: Byte, counter: Long): ByteArray {
+        val nonce = ByteArray(12)
+        nonce[0] = 'O'.code.toByte()
+        nonce[1] = 'B'.code.toByte()
+        nonce[2] = if (direction == BridgeConstants.AUDIO_DIR_ANDROID_TO_IOS) 'A'.code.toByte() else 'I'.code.toByte()
+        nonce[3] = '2'.code.toByte()
+        for (i in 0 until 8) {
+            nonce[4 + i] = ((counter ushr (56 - i * 8)) and 0xFFL).toByte()
+        }
+        return nonce
+    }
+
     fun toBase64(bytes: ByteArray): String = Base64.getEncoder().encodeToString(bytes)
 
     fun fromBase64(b64: String): ByteArray = Base64.getDecoder().decode(b64)

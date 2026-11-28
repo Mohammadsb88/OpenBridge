@@ -32,6 +32,9 @@ final class BridgeManager: NSObject, ObservableObject {
     @Published var isAudioDirect: Bool = false
     @Published var isSyncing: Bool = false
     @Published var androidSpeakerOn: Bool = false
+    @Published var audioTransportMode: String = "" // "", "wifi_pcm", "ble_adpcm", "sip"
+    @Published var voiceCapability: VoiceCapabilityInfo?
+    @Published var isProbingVoice: Bool = false
 
     @Published var appLanguage: String {
         didSet {
@@ -64,15 +67,20 @@ final class BridgeManager: NSObject, ObservableObject {
     private var connectedPeripheral: CBPeripheral?
     private var rxCharacteristic: CBCharacteristic?
     private var txCharacteristic: CBCharacteristic?
+    private var audioRxCharacteristic: CBCharacteristic?
+    private var audioTxCharacteristic: CBCharacteristic?
 
     private var sharedKey: SymmetricKey?
     private var pendingPairHello: PairHelloPayload?
     private let decoder = FrameCodec.StreamDecoder()
     private let localAudio = LocalAudioStreamer()
+    private let bleAudio = BleAudioStreamer()
     private let sipClient = SipClient()
     private let callKit = CallKitManager.shared
     private var isSipCallActive = false
     private var hasPerformedInitialSync = false
+    private var txAudioCounter: UInt64 = 1
+    private var audioFallbackTimer: DispatchWorkItem?
 
     private let timeFormatter: DateFormatter = {
         let f = DateFormatter()
@@ -112,7 +120,27 @@ final class BridgeManager: NSObject, ObservableObject {
     private func setupAudioAndCallKitBindings() {
         localAudio.onLog = { [weak self] msg in self?.log(msg) }
         localAudio.onStateChanged = { [weak self] st in
-            DispatchQueue.main.async { self?.audioLinkState = st }
+            DispatchQueue.main.async {
+                guard let self else { return }
+                if self.audioTransportMode != "ble_adpcm" {
+                    self.audioLinkState = st
+                }
+                if st == .failed && self.activeCall != nil && self.voiceMode == .localWifi && self.audioRxCharacteristic != nil {
+                    self.activateBleAudioFallback(reason: "Wi-Fi TCP failed")
+                }
+            }
+        }
+        bleAudio.onLog = { [weak self] msg in self?.log(msg) }
+        bleAudio.onStateChanged = { [weak self] st in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                if self.audioTransportMode == "ble_adpcm" {
+                    self.audioLinkState = st
+                }
+            }
+        }
+        bleAudio.onEncodedAdpcmFrame = { [weak self] adpcmPlain in
+            self?.sendBleAudioFrame(adpcmPlain)
         }
         sipClient.onLog = { [weak self] msg in self?.log(msg) }
         callKit.onLog = { [weak self] msg in self?.log(msg) }
@@ -156,11 +184,12 @@ final class BridgeManager: NSObject, ObservableObject {
         callKit.onAudioSessionActivated = { [weak self] in
             guard let self else { return }
             self.localAudio.onCallKitAudioActivated()
+            self.bleAudio.onCallKitAudioActivated()
             self.sipClient.onCallKitAudioActivated()
         }
         callKit.onAudioSessionDeactivated = { [weak self] in
             guard let self else { return }
-            self.localAudio.stop()
+            self.stopVoiceTransports()
             DispatchQueue.main.async {
                 self.isCallMuted = false
                 self.isSpeakerOn = false
@@ -169,6 +198,7 @@ final class BridgeManager: NSObject, ObservableObject {
         callKit.onMuteChanged = { [weak self] muted in
             guard let self else { return }
             self.localAudio.isMuted = muted
+            self.bleAudio.isMuted = muted
             self.sipClient.isMuted = muted
             DispatchQueue.main.async { self.isCallMuted = muted }
             self.sendEncryptedDict([
@@ -190,7 +220,7 @@ final class BridgeManager: NSObject, ObservableObject {
         }
         callKit.onEndCall = { [weak self] _ in
             guard let self else { return }
-            self.localAudio.stop()
+            self.stopVoiceTransports()
             if self.isSipCallActive || self.voiceMode == .sip {
                 self.sipClient.hangup()
                 self.isSipCallActive = false
@@ -264,7 +294,7 @@ final class BridgeManager: NSObject, ObservableObject {
         if callKit.activeCallUUID != nil {
             callKit.endActiveCall()
         } else {
-            localAudio.stop()
+            stopVoiceTransports()
             if isSipCallActive { sipClient.hangup() }
             if let num = activeCall?.number {
                 sendCallAction(action: "REJECT", number: num)
@@ -282,6 +312,7 @@ final class BridgeManager: NSObject, ObservableObject {
             callKit.setMuted(next)
         } else {
             localAudio.isMuted = next
+            bleAudio.isMuted = next
             sipClient.isMuted = next
             isCallMuted = next
             sendEncryptedDict([
@@ -296,6 +327,7 @@ final class BridgeManager: NSObject, ObservableObject {
         let next = !isSpeakerOn
         isSpeakerOn = next
         localAudio.setSpeakerEnabled(next)
+        bleAudio.setSpeakerEnabled(next)
     }
 
     func toggleAndroidSpeaker() {
@@ -394,18 +426,79 @@ final class BridgeManager: NSObject, ObservableObject {
         log("Sent CALL_FORWARD enable=\(enable) target=\(cleanTarget)")
     }
 
+    func requestVoiceCompatibilityCheck() {
+        guard connectionStatus == .connected else { return }
+        isProbingVoice = true
+        sendEncryptedDict(["type": "PROBE_VOICE_CAPABILITY"])
+        log("Requested hardware audio compatibility probe from Android")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 8.0) { [weak self] in
+            self?.isProbingVoice = false
+        }
+    }
+
     private func startLocalAudioIfAvailable() {
         guard voiceMode == .localWifi else { return }
         if audioLinkState == .connected || audioLinkState == .connecting {
             return
         }
+        audioFallbackTimer?.cancel()
         let host = activeCall?.wifiIp ?? deviceStatus?.wifiIp ?? ""
         let port = activeCall?.audioPort ?? deviceStatus?.audioPort ?? 54810
-        guard !host.isEmpty else {
-            log("Local audio waiting: enable Hotspot or same Wi-Fi on both phones")
-            return
+
+        if !host.isEmpty {
+            audioTransportMode = "wifi_pcm"
+            sendEncryptedDict(["type": "AUDIO_PREF", "transport": "wifi"])
+            localAudio.start(host: host, port: port, audioAlreadyActivated: callKit.isAudioSessionActive)
+
+            let work = DispatchWorkItem { [weak self] in
+                guard let self else { return }
+                if self.activeCall != nil && self.audioLinkState != .connected && self.audioRxCharacteristic != nil {
+                    self.activateBleAudioFallback(reason: "Wi-Fi timed out (1.6s)")
+                }
+            }
+            audioFallbackTimer = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.6, execute: work)
+        } else if audioRxCharacteristic != nil {
+            activateBleAudioFallback(reason: "No Hotspot IP (Pure BLE)")
+        } else {
+            log("Local audio unavailable: no Wi-Fi IP and no BLE audio channel")
         }
-        localAudio.start(host: host, port: port, audioAlreadyActivated: callKit.isAudioSessionActive)
+    }
+
+    private func activateBleAudioFallback(reason: String) {
+        audioFallbackTimer?.cancel()
+        audioFallbackTimer = nil
+        localAudio.stop()
+        audioTransportMode = "ble_adpcm"
+        sendEncryptedDict(["type": "AUDIO_PREF", "transport": "ble"])
+        bleAudio.start(audioAlreadyActivated: callKit.isAudioSessionActive)
+        log("Activated Pure-BLE IMA-ADPCM voice transport (\(reason))")
+    }
+
+    private func stopVoiceTransports() {
+        audioFallbackTimer?.cancel()
+        audioFallbackTimer = nil
+        localAudio.stop()
+        bleAudio.stop()
+        DispatchQueue.main.async {
+            self.audioTransportMode = ""
+        }
+    }
+
+    private func sendBleAudioFrame(_ adpcmPlain: Data) {
+        guard let key = sharedKey,
+              let peripheral = connectedPeripheral,
+              let audioRx = audioRxCharacteristic else { return }
+        let counter = txAudioCounter
+        txAudioCounter &+= 1
+        guard let packet = try? BridgeCrypto.sealAudioPacket(
+            key: key,
+            direction: BridgeConstants.audioDirIosToAndroid,
+            counter: counter,
+            plaintext: adpcmPlain
+        ) else { return }
+        let writeType: CBCharacteristicWriteType = audioRx.properties.contains(.writeWithoutResponse) ? .withoutResponse : .withResponse
+        peripheral.writeValue(packet, for: audioRx, type: writeType)
     }
 
     private func loadStoredSession() {
@@ -496,7 +589,7 @@ final class BridgeManager: NSObject, ObservableObject {
     }
 
     func unpair() {
-        localAudio.stop()
+        stopVoiceTransports()
         if let p = connectedPeripheral {
             centralManager?.cancelPeripheralConnection(p)
         }
@@ -516,10 +609,14 @@ final class BridgeManager: NSObject, ObservableObject {
         isAudioDirect = false
         isSyncing = false
         androidSpeakerOn = false
+        voiceCapability = nil
+        isProbingVoice = false
         hasPerformedInitialSync = false
         connectedPeripheral = nil
         rxCharacteristic = nil
         txCharacteristic = nil
+        audioRxCharacteristic = nil
+        audioTxCharacteristic = nil
         connectionStatus = .notPaired
         log("Unpaired and cleared session keys.")
     }
@@ -548,7 +645,7 @@ final class BridgeManager: NSObject, ObservableObject {
         ]
         sendEncryptedDict(dict)
         if action == "REJECT" || action == "QUICK_SMS" {
-            localAudio.stop()
+            stopVoiceTransports()
             callKit.reportRemoteEnded()
             DispatchQueue.main.async {
                 self.activeCall = nil
@@ -714,7 +811,16 @@ final class BridgeManager: NSObject, ObservableObject {
                 if let info = try? JSONDecoder().decode(AudioStatusInfo.self, from: plain) {
                     self.isAudioDirect = info.direct
                     self.audioPathDescription = info.source
-                    self.log("Audio path: direct=\(info.direct) (\(info.source))")
+                    if let t = info.transport, !t.isEmpty {
+                        self.audioTransportMode = t
+                    }
+                    self.log("Audio path: direct=\(info.direct) [\(info.transport ?? "wifi")] (\(info.source))")
+                }
+            case "VOICE_CAPABILITY":
+                if let cap = try? JSONDecoder().decode(VoiceCapabilityInfo.self, from: plain) {
+                    self.voiceCapability = cap
+                    self.isProbingVoice = false
+                    self.log("Android Voice Capability: \(cap.verdict) — \(cap.summary)")
                 }
             case "SMS_SENT":
                 if let ack = try? JSONDecoder().decode(SmsSentAck.self, from: plain) {
@@ -741,7 +847,7 @@ final class BridgeManager: NSObject, ObservableObject {
                             self.audioPathDescription = ""
                             self.isAudioDirect = false
                             self.androidSpeakerOn = false
-                            self.localAudio.stop()
+                            self.stopVoiceTransports()
                             self.callKit.reportRemoteEnded()
                         }
                     } else if call.state == "OFFHOOK" {
@@ -830,9 +936,11 @@ extension BridgeManager: CBCentralManagerDelegate {
     func centralManager(_ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral, error: Error?) {
         rxCharacteristic = nil
         txCharacteristic = nil
+        audioRxCharacteristic = nil
+        audioTxCharacteristic = nil
         hasPerformedInitialSync = false
         decoder.reset()
-        localAudio.stop()
+        stopVoiceTransports()
         if sharedKey != nil {
             connectionStatus = .disconnected
             log("Disconnected (\(error?.localizedDescription ?? "clean")). Re-scanning...")
@@ -846,7 +954,12 @@ extension BridgeManager: CBPeripheralDelegate {
         guard let services = peripheral.services else { return }
         for service in services where service.uuid == BridgeConstants.serviceUUID {
             peripheral.discoverCharacteristics(
-                [BridgeConstants.rxCharUUID, BridgeConstants.txCharUUID],
+                [
+                    BridgeConstants.rxCharUUID,
+                    BridgeConstants.txCharUUID,
+                    BridgeConstants.audioRxCharUUID,
+                    BridgeConstants.audioTxCharUUID
+                ],
                 for: service
             )
         }
@@ -859,6 +972,11 @@ extension BridgeManager: CBPeripheralDelegate {
                 rxCharacteristic = char
             } else if char.uuid == BridgeConstants.txCharUUID {
                 txCharacteristic = char
+                peripheral.setNotifyValue(true, for: char)
+            } else if char.uuid == BridgeConstants.audioRxCharUUID {
+                audioRxCharacteristic = char
+            } else if char.uuid == BridgeConstants.audioTxCharUUID {
+                audioTxCharacteristic = char
                 peripheral.setNotifyValue(true, for: char)
             }
         }
@@ -873,14 +991,26 @@ extension BridgeManager: CBPeripheralDelegate {
             log("Subscribed to TX notifications")
             sendPairHelloIfNeeded()
             sendPing()
+        } else if characteristic.uuid == BridgeConstants.audioTxCharUUID && characteristic.isNotifying {
+            log("Subscribed to Pure-BLE AUDIO_TX notifications")
         }
     }
 
     func peripheral(_ peripheral: CBPeripheral, didUpdateValueFor characteristic: CBCharacteristic, error: Error?) {
-        guard characteristic.uuid == BridgeConstants.txCharUUID,
-              let value = characteristic.value else {
+        guard let value = characteristic.value else { return }
+        if characteristic.uuid == BridgeConstants.audioTxCharUUID {
+            guard let key = sharedKey,
+                  let plain = BridgeCrypto.openAudioPacket(
+                      key: key,
+                      expectedDirection: BridgeConstants.audioDirAndroidToIos,
+                      packet: value
+                  ) else {
+                return
+            }
+            bleAudio.feedIncomingAdpcmPlaintext(plain)
             return
         }
+        guard characteristic.uuid == BridgeConstants.txCharUUID else { return }
         let frames = decoder.append(value)
         for frame in frames {
             handleIncomingFrame(frame)

@@ -29,6 +29,20 @@
     <string name="permissions_title">Device Setup</string>
     <string name="permissions_all_ok">All required permissions active</string>
     <string name="permissions_missing">Tap to grant missing permissions</string>
+    <string name="btn_oem_autostart">Background Autostart</string>
+
+    <string name="compat_title">Hardware Audio Compatibility</string>
+    <string name="compat_btn_probe">Check Call Audio Hardware</string>
+    <string name="compat_checking">Probing telephony audio paths…</string>
+    <string name="compat_untested">Run a quick hardware probe to test direct bag-mode call audio on this phone.</string>
+    <string name="compat_verdict_two_way">Two-Way Direct Call Audio Ready</string>
+    <string name="compat_verdict_downlink">Direct Listen Only (Speaker Uplink)</string>
+    <string name="compat_verdict_fallback">Standard Acoustic Mode (BLE + Wi-Fi)</string>
+    <string name="shizuku_status_ready">Shizuku Active &amp; Authorized</string>
+    <string name="shizuku_status_perm">Shizuku Running — Tap Authorize</string>
+    <string name="shizuku_status_off">Shizuku Inactive (Optional for bag mode)</string>
+    <string name="audio_transport_ble">Voice Link: Pure BLE ADPCM (No Wi-Fi needed)</string>
+    <string name="audio_transport_wifi">Voice Link: Local Wi-Fi HD (16 kHz)</string>
 
     <string name="voice_title">Voice &amp; Call Bridge</string>
     <string name="voice_mode_standard">Standard (CallKit Control + Local Audio)</string>

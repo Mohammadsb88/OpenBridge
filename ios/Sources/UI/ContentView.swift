@@ -144,14 +144,14 @@ private struct ActiveCallBanner: View {
                         .foregroundStyle(Color.obCyan)
                     } else if bridge.isAudioDirect {
                         Label(
-                            isPersian ? "صدای مستقیم GSM فعال است (بدون اسپیکر)" : "Direct GSM Audio Active (\(bridge.audioPathDescription))",
+                            isPersian ? "صدای مستقیم تماس فعال است (حالت داخل کیف)" : "Direct Call Audio Active (\(bridge.audioPathDescription))",
                             systemImage: "checkmark.seal.fill"
                         )
                         .font(.caption2)
                         .foregroundStyle(Color.obGreen)
                     } else if !bridge.audioPathDescription.isEmpty {
                         Label(
-                            isPersian ? "فالبک میکروفون اندروید (برای داخل کیف، Root یا دایورت+SIP لازم است)" : "Mic Relay Fallback (Need Root or SIP for in-bag)",
+                            isPersian ? "فالبک میکروفون اندروید (برای داخل کیف، Shizuku را در اندروید تایید کنید)" : "Mic Relay Fallback (Enable Shizuku on Android for in-bag)",
                             systemImage: "exclamationmark.triangle.fill"
                         )
                         .font(.caption2)
@@ -235,15 +235,23 @@ private struct ActiveCallBanner: View {
             if bridge.voiceMode == .sip {
                 return (isPersian ? "صدای SIP" : "SIP Audio", .obCyan)
             }
+            if bridge.audioTransportMode == "ble_adpcm" {
+                switch bridge.audioLinkState {
+                case .connected: return (isPersian ? "بلوتوث ۳۲k ✓" : "BLE 32k ✓", .obGreen)
+                case .connecting, .reconnecting: return (isPersian ? "اتصال بلوتوث..." : "BLE Audio...", .orange)
+                case .failed: return (isPersian ? "خطای صدا" : "Audio Error", .red)
+                case .idle: return (isPersian ? "آماده بلوتوث" : "BLE Ready", .obCyan)
+                }
+            }
             switch bridge.audioLinkState {
-            case .connected: return (isPersian ? "صدا متصل ✓" : "PCM Live", .obGreen)
+            case .connected: return (isPersian ? "وای‌فای HD ✓" : "Wi-Fi HD ✓", .obGreen)
             case .connecting, .reconnecting: return (isPersian ? "اتصال صدا..." : "Connecting...", .orange)
-            case .failed: return (isPersian ? "خطای Wi-Fi" : "No Wi-Fi", .red)
+            case .failed: return (isPersian ? "فالبک بلوتوث" : "BLE Fallback", .orange)
             case .idle:
                 let hasIp = !(bridge.deviceStatus?.wifiIp ?? "").isEmpty
                 return hasIp
-                    ? (isPersian ? "آماده صدا" : "Audio Ready", .obCyan)
-                    : (isPersian ? "بدون هات‌اسپات" : "No Hotspot", .secondary)
+                    ? (isPersian ? "وای‌فای + بلوتوث" : "Wi-Fi + BLE", .obCyan)
+                    : (isPersian ? "بلوتوث خالص آماده" : "Pure BLE Ready", .obCyan)
             }
         }()
         Text(text)
@@ -345,19 +353,36 @@ private struct BridgeHomeView: View {
                                 tint: .obCyan
                             )
                         }
-                        HStack {
-                            Image(systemName: "wifi")
-                                .foregroundStyle((status.wifiIp ?? "").isEmpty ? Color.orange : Color.obCyan)
-                            if let ip = status.wifiIp, !ip.isEmpty {
-                                Text(isPersian ? "کانال صدای هات‌اسپات آماده است (\(ip))" : "Hotspot Audio Ready (\(ip))")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            } else {
-                                Text(isPersian ? "برای انتقال صدای تماس، هات‌اسپات اندروید را روشن و به آن وصل شوید" : "Connect to Android Hotspot for PCM call voice")
-                                    .font(.caption)
-                                    .foregroundStyle(.orange)
+                        HStack(spacing: 10) {
+                            Image(systemName: (status.wifiIp ?? "").isEmpty ? "waveform.path.ecg" : "wifi")
+                                .foregroundStyle((status.wifiIp ?? "").isEmpty ? Color.obGreen : Color.obCyan)
+                            VStack(alignment: .leading, spacing: 2) {
+                                if let ip = status.wifiIp, !ip.isEmpty {
+                                    Text(isPersian ? "وای‌فای HD (\(ip)) + فالبک بلوتوث خالص آماده" : "Hotspot Wi-Fi HD (\(ip)) + Pure-BLE Fallback Ready")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                } else {
+                                    Text(isPersian ? "صدای تماس بدون وای‌فای (بلوتوث خالص ۳۲k) آماده است" : "Pure-BLE Call Audio Ready (No Wi-Fi / Hotspot Needed)")
+                                        .font(.caption)
+                                        .foregroundStyle(Color.obGreen)
+                                }
+                                if let cap = bridge.voiceCapability {
+                                    Text(cap.summary)
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
+                                        .lineLimit(2)
+                                }
                             }
                             Spacer()
+                            if bridge.isProbingVoice {
+                                ProgressView().controlSize(.small)
+                            } else {
+                                Button(isPersian ? "تست صدا" : "Probe") {
+                                    bridge.requestVoiceCompatibilityCheck()
+                                }
+                                .buttonStyle(.bordered)
+                                .controlSize(.mini)
+                            }
                         }
                         .padding(12)
                         .background(Color.obCard)
@@ -697,7 +722,7 @@ private struct DialerAndCallsView: View {
 
     private var modeBadgeText: String {
         switch bridge.voiceMode {
-        case .localWifi: return isPersian ? "حالت تماس CallKit + صدای هات‌اسپات" : "CallKit + Local Wi-Fi Audio"
+        case .localWifi: return isPersian ? "CallKit + بلوتوث خالص / وای‌فای HD" : "CallKit + Pure-BLE / Wi-Fi Audio"
         case .sip: return isPersian ? "حالت تماس SIP (\(bridge.sipStatusText))" : "SIP VoIP (\(bridge.sipStatusText))"
         case .remoteOnly: return isPersian ? "فقط کنترل تماس اندروید" : "Android Remote Control"
         }
@@ -713,10 +738,18 @@ private struct MessagesView: View {
     @State private var composeRecipient = ""
     @State private var composeContactName = ""
 
+    private var threads: [SmsConversationThread] {
+        SmsConversationThread.group(bridge.messages)
+    }
+
+    private var recentOtps: [RelayedSms] {
+        Array(bridge.messages.filter { !$0.otp.isEmpty && !$0.isOutgoingMessage }.prefix(5))
+    }
+
     var body: some View {
         NavigationStack {
             Group {
-                if bridge.messages.isEmpty {
+                if threads.isEmpty {
                     VStack(spacing: 16) {
                         ContentUnavailableView(
                             isPersian ? "هنوز پیامکی نیست" : "No Messages Yet",
@@ -736,20 +769,23 @@ private struct MessagesView: View {
                 } else {
                     ScrollView {
                         LazyVStack(spacing: 12) {
-                            ForEach(bridge.messages) { sms in
-                                SmsCard(
-                                    sms: sms,
-                                    copiedOtpId: $copiedOtpId,
-                                    isPersian: isPersian,
-                                    onReply: {
-                                        composeRecipient = sms.sender
-                                        composeContactName = sms.contactName
-                                        showComposer = true
-                                    },
-                                    onCall: {
-                                        bridge.initiateCall(number: sms.sender, displayName: sms.displaySender)
-                                    }
-                                )
+                            if !recentOtps.isEmpty {
+                                RecentOtpStrip(otps: recentOtps, copiedOtpId: $copiedOtpId, isPersian: isPersian)
+                            }
+
+                            ForEach(threads) { thread in
+                                NavigationLink {
+                                    SmsConversationDetailView(
+                                        threadId: thread.id,
+                                        initialTitle: thread.displayTitle,
+                                        initialAddress: thread.primaryAddress,
+                                        copiedOtpId: $copiedOtpId,
+                                        isPersian: isPersian
+                                    )
+                                } label: {
+                                    ThreadSummaryRow(thread: thread, isPersian: isPersian)
+                                }
+                                .buttonStyle(.plain)
                             }
                         }
                         .padding(16)
@@ -785,108 +821,289 @@ private struct MessagesView: View {
     }
 }
 
-private struct SmsCard: View {
-    let sms: RelayedSms
+private struct RecentOtpStrip: View {
+    let otps: [RelayedSms]
     @Binding var copiedOtpId: String?
     let isPersian: Bool
-    let onReply: () -> Void
-    let onCall: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                if sms.isOutgoingMessage {
-                    Label(isPersian ? "به: \(sms.displaySender)" : "To: \(sms.displaySender)", systemImage: "paperplane.fill")
-                        .font(.headline)
-                        .foregroundStyle(Color.obCyan)
-                } else {
-                    Text(sms.displaySender)
-                        .font(.headline)
+            Text(isPersian ? "کدهای تایید اخیر (کپی سریع)" : "Recent OTPs (1-Tap Copy)")
+                .font(.caption.bold())
+                .foregroundStyle(.secondary)
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 10) {
+                    ForEach(otps) { sms in
+                        Button {
+                            UIPasteboard.general.string = sms.otp
+                            UINotificationFeedbackGenerator().notificationOccurred(.success)
+                            copiedOtpId = sms.id
+                        } label: {
+                            HStack(spacing: 8) {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(sms.displaySender)
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
+                                        .lineLimit(1)
+                                    Text(sms.otp)
+                                        .font(.system(.subheadline, design: .monospaced).bold())
+                                        .foregroundStyle(Color.obGreen)
+                                }
+                                Image(systemName: copiedOtpId == sms.id ? "checkmark.circle.fill" : "doc.on.doc")
+                                    .foregroundStyle(copiedOtpId == sms.id ? Color.obGreen : Color.obCyan)
+                            }
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 8)
+                            .background(Color.obCard)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 12)
+                                    .stroke(copiedOtpId == sms.id ? Color.obGreen : Color.obBorder, lineWidth: 1)
+                            )
+                            .clipShape(RoundedRectangle(cornerRadius: 12))
+                        }
+                        .buttonStyle(.plain)
+                    }
                 }
-                Spacer()
-                Text(Date(timeIntervalSince1970: Double(sms.ts) / 1000.0), style: .time)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+}
+
+private struct ThreadSummaryRow: View {
+    let thread: SmsConversationThread
+    let isPersian: Bool
+
+    private var initials: String {
+        let ch = thread.displayTitle.trimmingCharacters(in: .whitespaces).first
+        return ch.map { String($0).uppercased() } ?? "#"
+    }
+
+    var body: some View {
+        HStack(spacing: 12) {
+            ZStack {
+                Circle()
+                    .fill(thread.latestMessage.isOutgoingMessage ? Color.obCyan.opacity(0.2) : Color.obIndigo.opacity(0.25))
+                    .frame(width: 44, height: 44)
+                Text(initials)
+                    .font(.headline.bold())
+                    .foregroundStyle(Color.obCyan)
             }
 
-            Text(sms.body)
-                .font(.subheadline)
-                .foregroundStyle(sms.isOutgoingMessage ? .primary : .secondary)
-                .textSelection(.enabled)
-
-            if sms.isOutgoingMessage {
+            VStack(alignment: .leading, spacing: 4) {
                 HStack {
-                    deliveryBadge
+                    Text(thread.displayTitle)
+                        .font(.headline)
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
                     Spacer()
+                    Text(Date(timeIntervalSince1970: Double(thread.latestMessage.ts) / 1000.0), style: .time)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
-            } else {
-                if !sms.otp.isEmpty {
-                    HStack {
+
+                HStack(spacing: 6) {
+                    if thread.latestMessage.isOutgoingMessage {
+                        Image(systemName: "arrowshape.turn.up.right.fill")
+                            .font(.caption2)
+                            .foregroundStyle(Color.obCyan)
+                    }
+                    Text(thread.latestMessage.body)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                    Spacer()
+                    if thread.messagesAscending.count > 1 {
+                        Text("\(thread.messagesAscending.count)")
+                            .font(.caption2.bold())
+                            .padding(.horizontal, 7)
+                            .padding(.vertical, 2)
+                            .background(Color.obBorder)
+                            .clipShape(Capsule())
+                    }
+                }
+            }
+        }
+        .padding(14)
+        .background(Color.obCard)
+        .overlay(RoundedRectangle(cornerRadius: 16).stroke(Color.obBorder, lineWidth: 1))
+        .clipShape(RoundedRectangle(cornerRadius: 16))
+    }
+}
+
+private struct SmsConversationDetailView: View {
+    @EnvironmentObject var bridge: BridgeManager
+    let threadId: String
+    let initialTitle: String
+    let initialAddress: String
+    @Binding var copiedOtpId: String?
+    let isPersian: Bool
+
+    @State private var replyText = ""
+
+    private var currentThread: SmsConversationThread? {
+        SmsConversationThread.group(bridge.messages).first(where: { $0.id == threadId })
+    }
+
+    private var threadMessages: [RelayedSms] {
+        currentThread?.messagesAscending ?? []
+    }
+
+    private var displayTitle: String {
+        currentThread?.displayTitle ?? initialTitle
+    }
+
+    private var recipientAddress: String {
+        currentThread?.primaryAddress ?? initialAddress
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVStack(spacing: 10) {
+                        ForEach(threadMessages) { sms in
+                            SmsBubbleView(sms: sms, copiedOtpId: $copiedOtpId, isPersian: isPersian)
+                                .id(sms.id)
+                        }
+                    }
+                    .padding(16)
+                }
+                .onAppear {
+                    if let lastId = threadMessages.last?.id {
+                        proxy.scrollTo(lastId, anchor: .bottom)
+                    }
+                }
+                .onChange(of: threadMessages.count) {
+                    if let lastId = threadMessages.last?.id {
+                        withAnimation { proxy.scrollTo(lastId, anchor: .bottom) }
+                    }
+                }
+            }
+
+            Divider()
+                .overlay(Color.obBorder)
+
+            HStack(spacing: 10) {
+                TextField(
+                    isPersian ? "پاسخ پیامکی..." : "Reply via Android SIM...",
+                    text: $replyText,
+                    axis: .vertical
+                )
+                .lineLimit(1...4)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .background(Color.obCard)
+                .overlay(RoundedRectangle(cornerRadius: 18).stroke(Color.obBorder, lineWidth: 1))
+                .clipShape(RoundedRectangle(cornerRadius: 18))
+
+                Button {
+                    let body = replyText.trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard !body.isEmpty, !recipientAddress.isEmpty else { return }
+                    bridge.sendSms(
+                        recipient: recipientAddress,
+                        body: body,
+                        contactName: displayTitle == recipientAddress ? "" : displayTitle
+                    )
+                    replyText = ""
+                } label: {
+                    Image(systemName: "paperplane.fill")
+                        .font(.headline)
+                        .foregroundStyle(.white)
+                        .frame(width: 40, height: 40)
+                        .background(Color.obCyan)
+                        .clipShape(Circle())
+                }
+                .disabled(
+                    replyText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
+                    recipientAddress.isEmpty ||
+                    bridge.connectionStatus != .connected
+                )
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+            .background(Color.obCard.opacity(0.6))
+        }
+        .background(Color.obBg.ignoresSafeArea())
+        .navigationTitle(displayTitle)
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                if !recipientAddress.isEmpty {
+                    Button {
+                        bridge.initiateCall(number: recipientAddress, displayName: displayTitle)
+                    } label: {
+                        Image(systemName: "phone.fill")
+                    }
+                }
+            }
+        }
+    }
+}
+
+private struct SmsBubbleView: View {
+    let sms: RelayedSms
+    @Binding var copiedOtpId: String?
+    let isPersian: Bool
+
+    var body: some View {
+        HStack {
+            if sms.isOutgoingMessage {
+                Spacer(minLength: 48)
+            }
+            VStack(alignment: sms.isOutgoingMessage ? .trailing : .leading, spacing: 6) {
+                Text(sms.body)
+                    .font(.subheadline)
+                    .foregroundStyle(.primary)
+                    .textSelection(.enabled)
+
+                if !sms.isOutgoingMessage && !sms.otp.isEmpty {
+                    HStack(spacing: 8) {
                         Text(sms.otp)
-                            .font(.system(.title3, design: .monospaced).bold())
+                            .font(.system(.callout, design: .monospaced).bold())
                             .foregroundStyle(Color.obGreen)
-                        Spacer()
                         Button {
                             UIPasteboard.general.string = sms.otp
                             UINotificationFeedbackGenerator().notificationOccurred(.success)
                             copiedOtpId = sms.id
                         } label: {
                             Label(
-                                copiedOtpId == sms.id ? (isPersian ? "کپی شد" : "Copied") : (isPersian ? "کپی کد" : "Copy OTP"),
+                                copiedOtpId == sms.id ? (isPersian ? "کپی شد" : "Copied") : (isPersian ? "کپی" : "Copy"),
                                 systemImage: copiedOtpId == sms.id ? "checkmark" : "doc.on.doc"
                             )
+                            .font(.caption.bold())
                         }
                         .buttonStyle(.borderedProminent)
                         .tint(copiedOtpId == sms.id ? .obGreen : .obCyan)
-                        .controlSize(.small)
+                        .controlSize(.mini)
                     }
-                    .padding(10)
+                    .padding(8)
                     .background(Color.obGreen.opacity(0.12))
-                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                    .clipShape(RoundedRectangle(cornerRadius: 10))
                 }
 
-                if !sms.sender.isEmpty {
-                    HStack(spacing: 10) {
-                        Button(action: onReply) {
-                            Label(isPersian ? "پاسخ پیامکی" : "Reply SMS", systemImage: "arrowshape.turn.up.left")
-                                .font(.caption.weight(.semibold))
-                        }
-                        .buttonStyle(.bordered)
-                        .controlSize(.small)
-
-                        Button(action: onCall) {
-                            Label(isPersian ? "تماس" : "Call", systemImage: "phone")
-                                .font(.caption.weight(.semibold))
-                        }
-                        .buttonStyle(.bordered)
-                        .controlSize(.small)
+                HStack(spacing: 6) {
+                    Text(Date(timeIntervalSince1970: Double(sms.ts) / 1000.0), style: .time)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    if sms.isOutgoingMessage {
+                        let status = sms.deliveryStatus ?? "sent"
+                        Text(status == "sending" ? "…" : (status == "failed" ? "!" : "✓"))
+                            .font(.caption2.bold())
+                            .foregroundStyle(status == "failed" ? .red : (status == "sending" ? .orange : Color.obGreen))
                     }
-                    .padding(.top, 2)
                 }
+            }
+            .padding(12)
+            .background(sms.isOutgoingMessage ? Color.obCardOut : Color.obCard)
+            .overlay(
+                RoundedRectangle(cornerRadius: 16)
+                    .stroke(sms.isOutgoingMessage ? Color.obCyan.opacity(0.4) : Color.obBorder, lineWidth: 1)
+            )
+            .clipShape(RoundedRectangle(cornerRadius: 16))
+            if !sms.isOutgoingMessage {
+                Spacer(minLength: 48)
             }
         }
-        .padding(14)
-        .background(sms.isOutgoingMessage ? Color.obCardOut : Color.obCard)
-        .overlay(
-            RoundedRectangle(cornerRadius: 16)
-                .stroke(sms.isOutgoingMessage ? Color.obCyan.opacity(0.35) : Color.obBorder, lineWidth: 1)
-        )
-        .clipShape(RoundedRectangle(cornerRadius: 16))
-    }
-
-    @ViewBuilder
-    private var deliveryBadge: some View {
-        let status = sms.deliveryStatus ?? "sent"
-        let (label, color): (String, Color) = {
-            switch status {
-            case "sending": return (isPersian ? "در حال ارسال از سیم‌کارت اندروید..." : "Sending via Android SIM...", .orange)
-            case "failed": return (isPersian ? "ارسال ناموفق\(sms.errorDetail.map { ": \($0)" } ?? "")" : "Failed\(sms.errorDetail.map { ": \($0)" } ?? "")", .red)
-            default: return (isPersian ? "ارسال شد ✓" : "Sent ✓", .obGreen)
-            }
-        }()
-        Text(label)
-            .font(.caption2.bold())
-            .foregroundStyle(color)
     }
 }
 
@@ -1020,10 +1237,31 @@ private struct SettingsView: View {
             List {
                 Section(isPersian ? "حالت مکالمه (CallKit)" : "Calling & Voice Mode") {
                     Picker(isPersian ? "حالت صدا" : "Voice Mode", selection: $bridge.voiceMode) {
-                        Text(isPersian ? "صدای محلی + CallKit" : "Local Wi-Fi + CallKit").tag(VoiceCallMode.localWifi)
+                        Text(isPersian ? "خودکار (بلوتوث + وای‌فای) + CallKit" : "Auto (Pure-BLE + Wi-Fi) + CallKit").tag(VoiceCallMode.localWifi)
                         Text(isPersian ? "تلفن اینترنتی (SIP)" : "SIP VoIP + CallKit").tag(VoiceCallMode.sip)
                         Text(isPersian ? "فقط کنترل از راه دور" : "Remote Control Only").tag(VoiceCallMode.remoteOnly)
                     }
+                    Button {
+                        bridge.requestVoiceCompatibilityCheck()
+                    } label: {
+                        HStack {
+                            Label(isPersian ? "تست سخت‌افزار صدای اندروید" : "Check Android Call Audio", systemImage: "waveform.and.magnifyingglass")
+                            Spacer()
+                            if bridge.isProbingVoice {
+                                ProgressView().controlSize(.small)
+                            } else if let cap = bridge.voiceCapability {
+                                Text(cap.verdict)
+                                    .font(.caption)
+                                    .foregroundStyle(cap.verdict == "two_way_direct" ? Color.obGreen : .orange)
+                            } else {
+                                Text(isPersian ? "اجرا" : "Run")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                    .disabled(bridge.connectionStatus != .connected)
+
                     Button {
                         showSipSheet = true
                     } label: {

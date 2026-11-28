@@ -26,6 +26,7 @@ android/build/
 # Secrets / Signing
 *.jks
 *.keystore
+!android/app/openbridge-community.keystore
 *.p12
 *.mobileprovision
 .env

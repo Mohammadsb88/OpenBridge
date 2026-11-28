@@ -164,6 +164,22 @@ class BridgeForegroundService : Service() {
             onDeviceConnected = {
                 updateNotification()
                 pushDeviceStatus()
+                BridgeStore.voiceCapability.value?.let { cap ->
+                    BridgeRuntime.sendToIphone(
+                        BridgeModels.voiceCapabilityJson(
+                            verdict = cap.verdict,
+                            mode = cap.mode,
+                            downlinkOk = cap.downlinkOk,
+                            uplinkOk = cap.uplinkOk,
+                            downlinkSource = cap.downlinkSource,
+                            uplinkLabel = cap.uplinkLabel,
+                            summary = cap.summary
+                        )
+                    )
+                }
+            },
+            onBleAudioPcm16k = { pcm16k ->
+                BridgeRuntime.audioRelay?.onIncomingBleAudioPcm(pcm16k)
             }
         )
         BridgeRuntime.gattManager = manager
@@ -376,6 +392,15 @@ class BridgeForegroundService : Service() {
             }
             "SYNC_REQUEST" -> serviceScope.launch(Dispatchers.IO) {
                 performHistoryAndContactsSync()
+            }
+            "PROBE_VOICE_CAPABILITY" -> serviceScope.launch(Dispatchers.IO) {
+                BridgeRuntime.audioRelay?.probeCompatibility()
+            }
+            "AUDIO_PREF" -> {
+                val transport = cmd.optString("transport", "")
+                if (transport.isNotBlank()) {
+                    BridgeRuntime.audioRelay?.setPreferredTransport(transport)
+                }
             }
             else -> BridgeStore.log("Unknown command from iOS: ${cmd.optString("type")}")
         }

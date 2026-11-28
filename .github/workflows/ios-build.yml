@@ -3,6 +3,7 @@ name: iOS Build & Test
 on:
   push:
     branches: [ main ]
+    tags: [ 'v*' ]
     paths:
       - 'ios/**'
       - '.github/workflows/ios-build.yml'
@@ -61,3 +62,9 @@ jobs:
         with:
           name: OpenBridge-iOS-Unsigned-IPA
           path: ios/OpenBridge-unsigned.ipa
+
+      - name: Publish Tag Release Asset
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ios/OpenBridge-unsigned.ipa

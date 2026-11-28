@@ -20,28 +20,30 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import org.json.JSONObject
 import org.openbridge.android.data.BridgeStore
+import org.openbridge.android.data.VoiceCapabilityState
 import org.openbridge.android.protocol.BridgeConstants
 import org.openbridge.android.protocol.BridgeModels
 import org.openbridge.android.service.BridgeRuntime
 import rikka.shizuku.Shizuku
 import java.io.ByteArrayOutputStream
-import java.io.InputStream
-import java.io.OutputStream
 import java.net.Inet4Address
 import java.net.NetworkInterface
 import java.net.ServerSocket
 import java.net.Socket
+import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import kotlin.math.abs
 import kotlin.math.sqrt
 
 /**
- * Full-duplex 16kHz 16-bit mono PCM audio relay over Local Hotspot / Wi-Fi (port 54810).
- * - Tries Shizuku UserService (privileged UID) when enabled for direct VOICE_CALL capture without speaker
- * - Probes direct VOICE_CALL / VOICE_DOWNLINK on rooted ROMs
- * - Preserves cellular MODE_IN_CALL, with optional speaker + software echo suppression fallback
+ * Dual-transport 16kHz mono PCM audio bridge:
+ * - Supports automatic Wi-Fi / Hotspot HD TCP streaming (port 54810) when reachable
+ * - Falls back seamlessly to Pure-BLE E2EE 8kHz IMA-ADPCM (`AUDIO_TX`/`AUDIO_RX`) with zero Wi-Fi
+ * - Routes call audio via Shizuku PrivilegedAudioService (dynamic OEM sample-rate/stereo adaptation),
+ *   Root VOICE_CALL, or Acoustic Fallback with Echo Suppression.
  */
 class LocalAudioRelayServer(private val context: Context) {
     companion object {
@@ -98,6 +100,7 @@ class LocalAudioRelayServer(private val context: Context) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var serverSocket: ServerSocket? = null
     private var acceptJob: Job? = null
+    private var callSessionJob: Job? = null
 
     @Volatile
     private var activeClient: Socket? = null
@@ -107,6 +110,14 @@ class LocalAudioRelayServer(private val context: Context) {
 
     @Volatile
     private var lastDownlinkPeakMs: Long = 0L
+
+    @Volatile
+    private var preferredTransport: String = "" // "" | "ble" | "wifi"
+
+    @Volatile
+    private var callBridgeActive: Boolean = false
+
+    private val bleUplinkQueue = ArrayBlockingQueue<ByteArray>(24)
 
     @Volatile
     private var privService: IPrivilegedAudioService? = null
@@ -131,44 +142,166 @@ class LocalAudioRelayServer(private val context: Context) {
             .daemon(false)
             .processNameSuffix("audio_priv")
             .debuggable(false)
-            .version(4)
+            .version(5)
+    }
+
+    private fun ensurePrivilegedServiceBound(): IPrivilegedAudioService? {
+        if (!isShizukuReady()) return null
+        privService?.let { return it }
+        return try {
+            val latch = CountDownLatch(1)
+            privLatch = latch
+            Shizuku.bindUserService(userServiceArgs, privConnection)
+            latch.await(3, TimeUnit.SECONDS)
+            privService
+        } catch (t: Throwable) {
+            BridgeStore.log("Shizuku bind error: ${t.message}")
+            null
+        }
+    }
+
+    /**
+     * Probes telephony downlink capture + TYPE_TELEPHONY uplink routing once on demand.
+     */
+    fun probeCompatibility(): VoiceCapabilityState {
+        val voiceMode = BridgeStore.voiceMode.value
+        val result = if (isShizukuReady()) {
+            val svc = ensurePrivilegedServiceBound()
+            val rawJson = runCatching { svc?.probeAudioCapabilities() }.getOrNull()
+            if (!rawJson.isNullOrBlank()) {
+                val obj = runCatching { JSONObject(rawJson) }.getOrNull()
+                if (obj != null) {
+                    val verdict = obj.optString("verdict", "fallback_only")
+                    val dlOk = obj.optBoolean("downlinkOk", false)
+                    val ulOk = obj.optBoolean("uplinkOk", false)
+                    val dlSrc = obj.optString("downlinkSource", "")
+                    val ulLbl = obj.optString("uplinkLabel", "")
+                    val summary = when (verdict) {
+                        "two_way_direct" -> "Direct Shizuku 2-way ready ($dlSrc + $ulLbl)"
+                        "downlink_only" -> "Direct listen ready ($dlSrc); uplink needs local mic/speaker fallback"
+                        else -> "Telephony HAL restricted ($dlSrc); acoustic speaker fallback available"
+                    }
+                    VoiceCapabilityState(
+                        verdict = verdict,
+                        mode = "shizuku",
+                        downlinkOk = dlOk,
+                        uplinkOk = ulOk,
+                        downlinkSource = dlSrc,
+                        uplinkLabel = ulLbl,
+                        summary = summary
+                    )
+                } else {
+                    null
+                }
+            } else {
+                null
+            }
+        } else {
+            null
+        } ?: run {
+            val rootOk = isRootAvailable()
+            VoiceCapabilityState(
+                verdict = if (rootOk && voiceMode == "root") "downlink_only" else "fallback_only",
+                mode = voiceMode,
+                downlinkOk = false,
+                uplinkOk = false,
+                downlinkSource = if (Shizuku.pingBinder()) "Grant Shizuku permission" else "Shizuku inactive",
+                uplinkLabel = "Acoustic speaker/mic fallback",
+                summary = if (Shizuku.pingBinder()) {
+                    "Authorize Shizuku for bag-mode direct call audio."
+                } else {
+                    "Start Shizuku via USB/Wireless ADB for direct call audio; acoustic fallback works anytime."
+                }
+            )
+        }
+
+        BridgeStore.setVoiceCapability(result)
+        BridgeStore.log("Voice compatibility check: ${result.verdict} (${result.summary})")
+        BridgeRuntime.sendToIphone(
+            BridgeModels.voiceCapabilityJson(
+                verdict = result.verdict,
+                mode = result.mode,
+                downlinkOk = result.downlinkOk,
+                uplinkOk = result.uplinkOk,
+                downlinkSource = result.downlinkSource,
+                uplinkLabel = result.uplinkLabel,
+                summary = result.summary
+            )
+        )
+        return result
     }
 
     @Synchronized
     fun startListening() {
-        if (acceptJob?.isActive == true) return
-        acceptJob = scope.launch {
-            try {
-                val server = ServerSocket(BridgeConstants.LOCAL_AUDIO_PORT).apply {
-                    reuseAddress = true
+        preferredTransport = ""
+        bleUplinkQueue.clear()
+        BridgeRuntime.gattManager?.resetAudioCodecState()
+
+        if (acceptJob?.isActive != true) {
+            acceptJob = scope.launch {
+                try {
+                    val server = ServerSocket(BridgeConstants.LOCAL_AUDIO_PORT).apply {
+                        reuseAddress = true
+                    }
+                    serverSocket = server
+                    BridgeStore.log("Audio relay listening on port ${BridgeConstants.LOCAL_AUDIO_PORT} (+BLE ADPCM fallback)")
+                    while (isActive) {
+                        val client = server.accept()
+                        runCatching { activeClient?.close() }
+                        client.tcpNoDelay = true
+                        activeClient = client
+                        preferredTransport = "wifi"
+                        BridgeStore.log("iPhone HD Wi-Fi audio connected from ${client.inetAddress.hostAddress}")
+                        BridgeStore.setActiveAudioTransport("wifi_pcm")
+                    }
+                } catch (e: Exception) {
+                    if (isActive) {
+                        BridgeStore.log("Audio relay server stopped: ${e.message}")
+                    }
                 }
-                serverSocket = server
-                BridgeStore.log("Audio relay listening on port ${BridgeConstants.LOCAL_AUDIO_PORT}")
-                while (isActive) {
-                    val client = server.accept()
-                    runCatching { activeClient?.close() }
-                    activeClient = client
-                    BridgeStore.log("iPhone audio stream connected from ${client.inetAddress.hostAddress}")
-                    handleClient(client)
-                }
-            } catch (e: Exception) {
-                if (isActive) {
-                    BridgeStore.log("Audio relay server stopped: ${e.message}")
-                }
+            }
+        }
+
+        if (callSessionJob?.isActive != true) {
+            callBridgeActive = true
+            callSessionJob = scope.launch {
+                runCallAudioSession()
             }
         }
     }
 
     @Synchronized
     fun stop() {
+        callBridgeActive = false
         isMuted = false
+        preferredTransport = ""
+        bleUplinkQueue.clear()
+        BridgeRuntime.gattManager?.resetAudioCodecState()
+        BridgeStore.setActiveAudioTransport("")
         runCatching { privService?.stopAudioCapture() }
         runCatching { activeClient?.close() }
         activeClient = null
         runCatching { serverSocket?.close() }
         serverSocket = null
+        callSessionJob?.cancel()
+        callSessionJob = null
         acceptJob?.cancel()
         acceptJob = null
+    }
+
+    fun setPreferredTransport(transport: String) {
+        preferredTransport = transport.lowercase()
+        BridgeStore.log("iOS audio transport preference: $preferredTransport")
+    }
+
+    fun onIncomingBleAudioPcm(pcm16k: ByteArray) {
+        if (!callBridgeActive || isMuted || pcm16k.isEmpty()) return
+        if (preferredTransport != "wifi" && activeClient == null) {
+            preferredTransport = "ble"
+        }
+        while (!bleUplinkQueue.offer(pcm16k)) {
+            bleUplinkQueue.poll()
+        }
     }
 
     fun setMuted(muted: Boolean) {
@@ -187,15 +320,8 @@ class LocalAudioRelayServer(private val context: Context) {
     }
 
     private fun tryStartShizukuCapturePort(): Pair<Int, String> {
-        if (!isShizukuReady()) return -1 to "Shizuku not ready"
+        val svc = ensurePrivilegedServiceBound() ?: return -1 to "Shizuku not ready"
         return try {
-            if (privService == null) {
-                val latch = CountDownLatch(1)
-                privLatch = latch
-                Shizuku.bindUserService(userServiceArgs, privConnection)
-                latch.await(3, TimeUnit.SECONDS)
-            }
-            val svc = privService ?: return -1 to "Shizuku UserService timeout"
             val port = svc.startAudioCapture()
             val status = runCatching { svc.captureStatus }.getOrDefault("unknown")
             port to status
@@ -266,8 +392,54 @@ class LocalAudioRelayServer(private val context: Context) {
         throw IllegalStateException("No initialized AudioRecord source available")
     }
 
+    private fun emitTransportStatus(direct: Boolean, source: String, transport: String) {
+        BridgeStore.setActiveAudioTransport(transport)
+        BridgeRuntime.sendToIphone(
+            BridgeModels.audioStatusJson(direct = direct, source = source, transport = transport)
+        )
+    }
+
+    private fun forwardDownlinkChunk(
+        pcm16k: ByteArray,
+        byteCount: Int,
+        sessionStartMs: Long,
+        direct: Boolean,
+        source: String,
+        lastReportedTransport: Array<String>
+    ) {
+        val chunk = if (byteCount == pcm16k.size) pcm16k else pcm16k.copyOf(byteCount)
+        val wifiSock = activeClient
+        if (wifiSock != null && !wifiSock.isClosed) {
+            try {
+                wifiSock.getOutputStream().write(chunk)
+                if (lastReportedTransport[0] != "wifi_pcm") {
+                    lastReportedTransport[0] = "wifi_pcm"
+                    emitTransportStatus(direct, source, "wifi_pcm")
+                }
+                return
+            } catch (_: Exception) {
+                runCatching { wifiSock.close() }
+                if (activeClient === wifiSock) activeClient = null
+            }
+        }
+
+        val wifiIp = getLocalWifiOrHotspotIp()
+        val graceElapsed = wifiIp.isBlank() ||
+            preferredTransport == "ble" ||
+            (System.currentTimeMillis() - sessionStartMs > 1200L)
+
+        val gatt = BridgeRuntime.gattManager
+        if (graceElapsed && gatt != null && gatt.isAudioReady()) {
+            gatt.sendAudioPcm16k(chunk)
+            if (lastReportedTransport[0] != "ble_adpcm") {
+                lastReportedTransport[0] = "ble_adpcm"
+                emitTransportStatus(direct, source, "ble_adpcm")
+            }
+        }
+    }
+
     @SuppressLint("MissingPermission", "WakelockTimeout")
-    private fun handleClient(socket: Socket) {
+    private fun runCallAudioSession() {
         val am = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
         val prevMode = am.mode
         @Suppress("DEPRECATION")
@@ -283,54 +455,79 @@ class LocalAudioRelayServer(private val context: Context) {
 
         try {
             wakeLock.acquire(60 * 60 * 1000L)
-            socket.tcpNoDelay = true
-
+            val sessionStartMs = System.currentTimeMillis()
+            val lastTransport = arrayOf("")
             val voiceMode = BridgeStore.voiceMode.value
 
-            // 1. Try Shizuku Privileged UserService first if enabled (zero speakerphone!)
+            // 1. Try Shizuku PrivilegedAudioService first (adaptive rates & direct HAL routing)
             if (voiceMode == "shizuku" && isShizukuReady()) {
                 val (privPort, privStatus) = tryStartShizukuCapturePort()
                 BridgeStore.log("Shizuku audio probe: port=$privPort status=$privStatus")
                 if (privPort > 0) {
-                    BridgeRuntime.sendToIphone(BridgeModels.audioStatusJson(direct = true, source = privStatus))
                     val ps = Socket("127.0.0.1", privPort).apply { tcpNoDelay = true }
                     privSocket = ps
-                    val netToPriv = scope.launch {
+
+                    val initialTransport = if (getLocalWifiOrHotspotIp().isBlank() || preferredTransport == "ble") "ble_adpcm" else "wifi_pcm"
+                    lastTransport[0] = initialTransport
+                    emitTransportStatus(direct = true, source = privStatus, transport = initialTransport)
+
+                    val wifiReadJob = scope.launch {
                         val buf = ByteArray(1024)
-                        val inp = socket.getInputStream()
+                        val leftover = ByteArrayOutputStream()
                         val out = ps.getOutputStream()
-                        while (isActive && !socket.isClosed && !ps.isClosed) {
-                            val r = inp.read(buf)
-                            if (r <= 0) break
-                            if (!isMuted) {
-                                out.write(buf, 0, r)
-                                out.flush()
+                        while (callBridgeActive && !ps.isClosed) {
+                            val wifi = activeClient
+                            if (wifi != null && !wifi.isClosed) {
+                                try {
+                                    val r = wifi.getInputStream().read(buf)
+                                    if (r <= 0) {
+                                        runCatching { wifi.close() }
+                                        if (activeClient === wifi) activeClient = null
+                                        continue
+                                    }
+                                    leftover.write(buf, 0, r)
+                                    val all = leftover.toByteArray()
+                                    val evenLen = all.size and 0xFFFE
+                                    if (evenLen > 0) {
+                                        if (!isMuted) {
+                                            out.write(all, 0, evenLen)
+                                            out.flush()
+                                        }
+                                        leftover.reset()
+                                        if (all.size > evenLen) leftover.write(all, evenLen, all.size - evenLen)
+                                    }
+                                } catch (_: Exception) {
+                                    runCatching { wifi.close() }
+                                    if (activeClient === wifi) activeClient = null
+                                }
+                            } else {
+                                val bleChunk = bleUplinkQueue.poll(150, TimeUnit.MILLISECONDS)
+                                if (bleChunk != null && !isMuted) {
+                                    out.write(bleChunk)
+                                    out.flush()
+                                }
                             }
                         }
                     }
-                    val privToNet = scope.launch {
-                        val buf = ByteArray(CHUNK_BYTES)
-                        val inp = ps.getInputStream()
-                        val out = socket.getOutputStream()
-                        while (isActive && !socket.isClosed && !ps.isClosed) {
-                            val r = inp.read(buf)
-                            if (r <= 0) break
-                            out.write(buf, 0, r)
-                            out.flush()
+
+                    val dlBuf = ByteArray(CHUNK_BYTES)
+                    val dlIn = ps.getInputStream()
+                    while (callBridgeActive && !ps.isClosed) {
+                        val r = dlIn.read(dlBuf)
+                        if (r <= 0) break
+                        val even = r and 0xFFFE
+                        if (even > 0) {
+                            forwardDownlinkChunk(dlBuf, even, sessionStartMs, true, privStatus, lastTransport)
                         }
                     }
-                    while (!socket.isClosed && !ps.isClosed && netToPriv.isActive && privToNet.isActive) {
-                        Thread.sleep(150)
-                    }
-                    netToPriv.cancel()
-                    privToNet.cancel()
+                    wifiReadJob.cancel()
                     return
                 } else {
-                    BridgeRuntime.sendToIphone(BridgeModels.audioStatusJson(direct = false, source = privStatus))
+                    emitTransportStatus(direct = false, source = privStatus, transport = "ble_adpcm")
                 }
             }
 
-            // 2. Fallback to local AudioRecord / AudioTrack (preserving MODE_IN_CALL!)
+            // 2. Fallback to local AudioRecord / AudioTrack (preserving MODE_IN_CALL)
             if (prevMode == AudioManager.MODE_NORMAL) {
                 am.mode = AudioManager.MODE_IN_COMMUNICATION
             }
@@ -344,12 +541,11 @@ class LocalAudioRelayServer(private val context: Context) {
 
             val (rec, isDirectVoiceCall) = createBestLocalRecorder(minRecBuf, tryPrivileged)
             recorder = rec
-
-            BridgeRuntime.sendToIphone(
-                BridgeModels.audioStatusJson(
-                    direct = isDirectVoiceCall,
-                    source = if (isDirectVoiceCall) "VOICE_CALL (Direct)" else "Acoustic Mic Fallback (No Root)"
-                )
+            val sourceLabel = if (isDirectVoiceCall) "VOICE_CALL (Direct)" else "Acoustic Mic Fallback"
+            emitTransportStatus(
+                direct = isDirectVoiceCall,
+                source = sourceLabel,
+                transport = if (getLocalWifiOrHotspotIp().isBlank() || preferredTransport == "ble") "ble_adpcm" else "wifi_pcm"
             )
 
             if (!isDirectVoiceCall && BridgeStore.autoSpeaker.value) {
@@ -390,55 +586,64 @@ class LocalAudioRelayServer(private val context: Context) {
                 player.play()
             }
 
-            val input: InputStream = socket.getInputStream()
-            val output: OutputStream = socket.getOutputStream()
-
-            val txJob = scope.launch {
-                val buf = ByteArray(CHUNK_BYTES)
-                while (isActive && !socket.isClosed) {
-                    val read = rec.read(buf, 0, buf.size)
-                    if (read > 1) {
-                        val evenCount = read and 0xFFFE
-                        processUplinkPcm(
-                            buf = buf,
-                            byteCount = evenCount,
-                            suppressEcho = !isDirectVoiceCall && BridgeStore.autoSpeaker.value
-                        )
-                        output.write(buf, 0, evenCount)
-                        output.flush()
-                    }
-                }
-            }
-
             val rxJob = scope.launch {
                 val netBuf = ByteArray(2048)
                 val leftover = ByteArrayOutputStream()
-                while (isActive && !socket.isClosed) {
-                    val read = input.read(netBuf)
-                    if (read <= 0) break
-                    leftover.write(netBuf, 0, read)
-                    val all = leftover.toByteArray()
-                    val evenLen = all.size and 0xFFFE
-                    if (evenLen > 0) {
-                        val toPlay = all.copyOfRange(0, evenLen)
-                        updateDownlinkEnergyAndGain(toPlay, evenLen)
-                        player?.write(toPlay, 0, evenLen)
-                        leftover.reset()
-                        if (all.size > evenLen) {
-                            leftover.write(all, evenLen, all.size - evenLen)
+                while (callBridgeActive) {
+                    val wifi = activeClient
+                    if (wifi != null && !wifi.isClosed) {
+                        try {
+                            val read = wifi.getInputStream().read(netBuf)
+                            if (read <= 0) {
+                                runCatching { wifi.close() }
+                                if (activeClient === wifi) activeClient = null
+                                continue
+                            }
+                            leftover.write(netBuf, 0, read)
+                            val all = leftover.toByteArray()
+                            val evenLen = all.size and 0xFFFE
+                            if (evenLen > 0) {
+                                val toPlay = all.copyOfRange(0, evenLen)
+                                updateDownlinkEnergyAndGain(toPlay, evenLen)
+                                player?.write(toPlay, 0, evenLen)
+                                leftover.reset()
+                                if (all.size > evenLen) {
+                                    leftover.write(all, evenLen, all.size - evenLen)
+                                }
+                            }
+                        } catch (_: Exception) {
+                            runCatching { wifi.close() }
+                            if (activeClient === wifi) activeClient = null
+                        }
+                    } else {
+                        val bleChunk = bleUplinkQueue.poll(150, TimeUnit.MILLISECONDS)
+                        if (bleChunk != null) {
+                            val copy = bleChunk.copyOf()
+                            updateDownlinkEnergyAndGain(copy, copy.size)
+                            player?.write(copy, 0, copy.size)
                         }
                     }
                 }
             }
 
-            while (!socket.isClosed && txJob.isActive && rxJob.isActive) {
-                Thread.sleep(150)
+            val recBuf = ByteArray(CHUNK_BYTES)
+            while (callBridgeActive) {
+                val read = rec.read(recBuf, 0, recBuf.size)
+                if (read > 1) {
+                    val evenCount = read and 0xFFFE
+                    processUplinkPcm(
+                        buf = recBuf,
+                        byteCount = evenCount,
+                        suppressEcho = !isDirectVoiceCall && BridgeStore.autoSpeaker.value
+                    )
+                    forwardDownlinkChunk(recBuf, evenCount, sessionStartMs, isDirectVoiceCall, sourceLabel, lastTransport)
+                }
             }
-
-            txJob.cancel()
             rxJob.cancel()
         } catch (e: Exception) {
-            BridgeStore.log("Audio stream ended: ${e.message}")
+            if (callBridgeActive) {
+                BridgeStore.log("Audio bridge session ended: ${e.message}")
+            }
         } finally {
             runCatching { privSocket?.close() }
             runCatching { privService?.stopAudioCapture() }
@@ -454,7 +659,7 @@ class LocalAudioRelayServer(private val context: Context) {
                 applySpeakerRouting(am, prevSpeaker)
             }
             runCatching { if (wakeLock.isHeld) wakeLock.release() }
-            runCatching { socket.close() }
+            BridgeStore.setActiveAudioTransport("")
         }
     }
 

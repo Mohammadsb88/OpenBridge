@@ -19,21 +19,26 @@ import android.content.Context
 import android.os.Build
 import android.os.ParcelUuid
 import org.json.JSONObject
+import org.openbridge.android.audio.ImaAdpcmCodec
+import org.openbridge.android.audio.PcmResampler
 import org.openbridge.android.data.BleConnectionState
 import org.openbridge.android.data.BridgeStore
 import org.openbridge.android.protocol.BridgeConstants
 import org.openbridge.android.protocol.BridgeCrypto
 import org.openbridge.android.protocol.BridgeModels
 import org.openbridge.android.protocol.FrameCodec
+import java.io.ByteArrayOutputStream
 import java.nio.charset.StandardCharsets
 import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
 
 @SuppressLint("MissingPermission")
 class BleGattServerManager(
     private val context: Context,
     private val onEncryptedCommand: (JSONObject) -> Unit,
-    private val onDeviceConnected: () -> Unit
+    private val onDeviceConnected: () -> Unit,
+    private val onBleAudioPcm16k: ((ByteArray) -> Unit)? = null
 ) {
     private val bluetoothManager = context.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
     private val bluetoothAdapter: BluetoothAdapter? = bluetoothManager.adapter
@@ -41,17 +46,28 @@ class BleGattServerManager(
     private var gattServer: BluetoothGattServer? = null
     private var advertiser: BluetoothLeAdvertiser? = null
     private var txCharacteristic: BluetoothGattCharacteristic? = null
+    private var audioTxCharacteristic: BluetoothGattCharacteristic? = null
 
     @Volatile
     private var connectedDevice: BluetoothDevice? = null
     @Volatile
     private var notificationsEnabled = false
     @Volatile
+    private var audioNotificationsEnabled = false
+    @Volatile
     private var currentMtu = 23
 
     private val streamDecoder = FrameCodec.StreamDecoder()
-    private val outgoingQueue = ConcurrentLinkedQueue<ByteArray>()
+    private val outgoingJsonQueue = ConcurrentLinkedQueue<ByteArray>()
+    private val audioLock = Any()
+    private val outgoingAudioQueue = ArrayDeque<ByteArray>(4)
     private val isSending = AtomicBoolean(false)
+
+    private val adpcmEncoder = ImaAdpcmCodec()
+    private val adpcmDecoder = ImaAdpcmCodec()
+    private val pcmAccumLock = Any()
+    private val pendingPcm16k = ByteArrayOutputStream()
+    private val txAudioCounter = AtomicLong(1L)
 
     private val advertiseCallback = object : AdvertiseCallback() {
         override fun onStartSuccess(settingsInEffect: AdvertiseSettings) {
@@ -72,7 +88,9 @@ class BleGattServerManager(
             if (newState == BluetoothProfile.STATE_CONNECTED) {
                 connectedDevice = device
                 streamDecoder.reset()
-                outgoingQueue.clear()
+                resetAudioCodecState()
+                outgoingJsonQueue.clear()
+                synchronized(audioLock) { outgoingAudioQueue.clear() }
                 isSending.set(false)
                 BridgeStore.setConnectionState(BleConnectionState.CONNECTED)
                 BridgeStore.log("BLE connected: ${device.address}")
@@ -81,9 +99,12 @@ class BleGattServerManager(
                 if (connectedDevice?.address == device.address) {
                     connectedDevice = null
                     notificationsEnabled = false
-                    outgoingQueue.clear()
+                    audioNotificationsEnabled = false
+                    outgoingJsonQueue.clear()
+                    synchronized(audioLock) { outgoingAudioQueue.clear() }
                     isSending.set(false)
                     streamDecoder.reset()
+                    resetAudioCodecState()
                     BridgeStore.setConnectionState(BleConnectionState.ADVERTISING)
                     BridgeStore.log("BLE disconnected: ${device.address}")
                 }
@@ -105,14 +126,25 @@ class BleGattServerManager(
             value: ByteArray?
         ) {
             if (descriptor.uuid == BridgeConstants.CCCD_UUID) {
-                notificationsEnabled = value != null &&
-                    value.contentEquals(BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE)
-                BridgeStore.log("iOS TX notifications enabled=$notificationsEnabled")
-                if (responseNeeded) {
-                    gattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, 0, null)
-                }
-                if (notificationsEnabled) {
-                    onDeviceConnected()
+                val enabled = value != null &&
+                    (value.contentEquals(BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE) ||
+                        value.contentEquals(BluetoothGattDescriptor.ENABLE_INDICATION_VALUE))
+                val charUuid = descriptor.characteristic?.uuid
+                if (charUuid == BridgeConstants.AUDIO_TX_CHAR_UUID) {
+                    audioNotificationsEnabled = enabled
+                    BridgeStore.log("iOS AUDIO_TX notifications enabled=$audioNotificationsEnabled")
+                    if (responseNeeded) {
+                        gattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, 0, null)
+                    }
+                } else {
+                    notificationsEnabled = enabled
+                    BridgeStore.log("iOS TX notifications enabled=$notificationsEnabled")
+                    if (responseNeeded) {
+                        gattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, 0, null)
+                    }
+                    if (notificationsEnabled) {
+                        onDeviceConnected()
+                    }
                 }
             } else if (responseNeeded) {
                 gattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_FAILURE, 0, null)
@@ -128,16 +160,27 @@ class BleGattServerManager(
             offset: Int,
             value: ByteArray?
         ) {
-            if (characteristic.uuid == BridgeConstants.RX_CHAR_UUID && value != null) {
-                if (responseNeeded) {
-                    gattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, 0, null)
+            when {
+                characteristic.uuid == BridgeConstants.RX_CHAR_UUID && value != null -> {
+                    if (responseNeeded) {
+                        gattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, 0, null)
+                    }
+                    val frames = streamDecoder.append(value)
+                    for (frame in frames) {
+                        handleIncomingFrame(frame)
+                    }
                 }
-                val frames = streamDecoder.append(value)
-                for (frame in frames) {
-                    handleIncomingFrame(frame)
+                characteristic.uuid == BridgeConstants.AUDIO_RX_CHAR_UUID && value != null -> {
+                    if (responseNeeded) {
+                        gattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, 0, null)
+                    }
+                    handleIncomingBleAudioPacket(value)
                 }
-            } else if (responseNeeded) {
-                gattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_FAILURE, 0, null)
+                else -> {
+                    if (responseNeeded) {
+                        gattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_FAILURE, 0, null)
+                    }
+                }
             }
         }
 
@@ -181,14 +224,38 @@ class BleGattServerManager(
                     BluetoothGattCharacteristic.PROPERTY_READ,
                 BluetoothGattCharacteristic.PERMISSION_READ
             )
-            val cccd = BluetoothGattDescriptor(
-                BridgeConstants.CCCD_UUID,
-                BluetoothGattDescriptor.PERMISSION_READ or BluetoothGattDescriptor.PERMISSION_WRITE
+            txChar.addDescriptor(
+                BluetoothGattDescriptor(
+                    BridgeConstants.CCCD_UUID,
+                    BluetoothGattDescriptor.PERMISSION_READ or BluetoothGattDescriptor.PERMISSION_WRITE
+                )
             )
-            txChar.addDescriptor(cccd)
+
+            val audioRxChar = BluetoothGattCharacteristic(
+                BridgeConstants.AUDIO_RX_CHAR_UUID,
+                BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE or
+                    BluetoothGattCharacteristic.PROPERTY_WRITE,
+                BluetoothGattCharacteristic.PERMISSION_WRITE
+            )
+            val audioTxChar = BluetoothGattCharacteristic(
+                BridgeConstants.AUDIO_TX_CHAR_UUID,
+                BluetoothGattCharacteristic.PROPERTY_NOTIFY or
+                    BluetoothGattCharacteristic.PROPERTY_READ,
+                BluetoothGattCharacteristic.PERMISSION_READ
+            )
+            audioTxChar.addDescriptor(
+                BluetoothGattDescriptor(
+                    BridgeConstants.CCCD_UUID,
+                    BluetoothGattDescriptor.PERMISSION_READ or BluetoothGattDescriptor.PERMISSION_WRITE
+                )
+            )
+
             service.addCharacteristic(rxChar)
             service.addCharacteristic(txChar)
+            service.addCharacteristic(audioRxChar)
+            service.addCharacteristic(audioTxChar)
             txCharacteristic = txChar
+            audioTxCharacteristic = audioTxChar
             server.addService(service)
 
             val bleAdvertiser = adapter.bluetoothLeAdvertiser
@@ -237,15 +304,32 @@ class BleGattServerManager(
         advertiser = null
         gattServer = null
         txCharacteristic = null
+        audioTxCharacteristic = null
         connectedDevice = null
         notificationsEnabled = false
-        outgoingQueue.clear()
+        audioNotificationsEnabled = false
+        outgoingJsonQueue.clear()
+        synchronized(audioLock) { outgoingAudioQueue.clear() }
         isSending.set(false)
+        resetAudioCodecState()
         BridgeStore.setConnectionState(BleConnectionState.STOPPED)
         BridgeStore.log("BLE GATT server stopped")
     }
 
     fun isConnected(): Boolean = connectedDevice != null && notificationsEnabled
+
+    fun isAudioReady(): Boolean = connectedDevice != null && audioNotificationsEnabled
+
+    fun resetAudioCodecState() {
+        synchronized(pcmAccumLock) {
+            pendingPcm16k.reset()
+            adpcmEncoder.reset()
+        }
+        synchronized(audioLock) {
+            outgoingAudioQueue.clear()
+        }
+        adpcmDecoder.reset()
+    }
 
     fun sendEncryptedJson(plainJson: String): Boolean {
         val key = BridgeStore.getSharedKey()
@@ -262,21 +346,83 @@ class BleGattServerManager(
                 BridgeCrypto.toBase64(nonce),
                 BridgeCrypto.toBase64(cipher)
             )
-            enqueueFrame(envelope.toByteArray(StandardCharsets.UTF_8))
+            enqueueJsonFrame(envelope.toByteArray(StandardCharsets.UTF_8))
         } catch (e: Exception) {
             BridgeStore.log("Encrypt error: ${e.message}")
             false
         }
     }
 
-    private fun enqueueFrame(payload: ByteArray): Boolean {
+    /**
+     * Compresses incoming 16kHz mono PCM16 into 20ms 8kHz IMA-ADPCM frames, encrypts them (111B),
+     * and dispatches over AUDIO_TX. Bounded drop-oldest queue keeps voice latency low.
+     */
+    fun sendAudioPcm16k(pcm16k: ByteArray) {
+        if (!isAudioReady() || pcm16k.isEmpty()) return
+        val key = BridgeStore.getSharedKey() ?: return
+
+        val readyChunks = mutableListOf<ByteArray>()
+        synchronized(pcmAccumLock) {
+            pendingPcm16k.write(pcm16k)
+            val raw = pendingPcm16k.toByteArray()
+            val frameBytes16k = 640 // 20ms @ 16kHz mono 16-bit
+            var offset = 0
+            while (offset + frameBytes16k <= raw.size) {
+                val slice16k = raw.copyOfRange(offset, offset + frameBytes16k)
+                val pcm8k = PcmResampler.downsample16kTo8k(slice16k)
+                val adpcmPlain = adpcmEncoder.encodeFrame(pcm8k)
+                val sealed = BridgeCrypto.sealAudioPacket(
+                    key = key,
+                    direction = BridgeConstants.AUDIO_DIR_ANDROID_TO_IOS,
+                    counter = txAudioCounter.getAndIncrement(),
+                    plaintext = adpcmPlain
+                )
+                readyChunks.add(sealed)
+                offset += frameBytes16k
+            }
+            if (offset > 0) {
+                pendingPcm16k.reset()
+                if (offset < raw.size) {
+                    pendingPcm16k.write(raw, offset, raw.size - offset)
+                }
+            }
+        }
+
+        if (readyChunks.isNotEmpty()) {
+            synchronized(audioLock) {
+                for (pkt in readyChunks) {
+                    while (outgoingAudioQueue.size >= 2) {
+                        outgoingAudioQueue.removeFirst()
+                    }
+                    outgoingAudioQueue.addLast(pkt)
+                }
+            }
+            drainOutgoingQueue()
+        }
+    }
+
+    private fun handleIncomingBleAudioPacket(packet: ByteArray) {
+        val key = BridgeStore.getSharedKey() ?: return
+        val plain = BridgeCrypto.openAudioPacket(
+            key = key,
+            expectedDirection = BridgeConstants.AUDIO_DIR_IOS_TO_ANDROID,
+            packet = packet
+        ) ?: return
+        val decoded = adpcmDecoder.decodeFrame(plain) ?: return
+        val pcm16k = PcmResampler.upsample8kTo16k(decoded.second)
+        if (pcm16k.isNotEmpty()) {
+            onBleAudioPcm16k?.invoke(pcm16k)
+        }
+    }
+
+    private fun enqueueJsonFrame(payload: ByteArray): Boolean {
         if (connectedDevice == null || !notificationsEnabled) {
             return false
         }
         val frame = FrameCodec.encode(payload)
         val chunkMax = (currentMtu - 3).coerceAtLeast(20)
         for (chunk in FrameCodec.chunk(frame, chunkMax)) {
-            outgoingQueue.add(chunk)
+            outgoingJsonQueue.add(chunk)
         }
         drainOutgoingQueue()
         return true
@@ -285,29 +431,43 @@ class BleGattServerManager(
     private fun drainOutgoingQueue() {
         val device = connectedDevice ?: return
         val server = gattServer ?: return
-        val txChar = txCharacteristic ?: return
-        if (!notificationsEnabled) return
         if (!isSending.compareAndSet(false, true)) return
 
-        val next = outgoingQueue.poll()
-        if (next == null) {
+        var targetChar: BluetoothGattCharacteristic? = null
+        var nextBytes: ByteArray? = null
+
+        val jsonNext = if (notificationsEnabled) outgoingJsonQueue.poll() else null
+        if (jsonNext != null && txCharacteristic != null) {
+            targetChar = txCharacteristic
+            nextBytes = jsonNext
+        } else if (audioNotificationsEnabled && audioTxCharacteristic != null) {
+            val audioNext = synchronized(audioLock) { outgoingAudioQueue.removeFirstOrNull() }
+            if (audioNext != null && (currentMtu - 3) >= audioNext.size) {
+                targetChar = audioTxCharacteristic
+                nextBytes = audioNext
+            }
+        }
+
+        val charToSend = targetChar
+        val payload = nextBytes
+        if (charToSend == null || payload == null) {
             isSending.set(false)
             return
         }
 
         try {
             val dispatched = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                server.notifyCharacteristicChanged(device, txChar, false, next) ==
+                server.notifyCharacteristicChanged(device, charToSend, false, payload) ==
                     BluetoothStatusCodesCompat.SUCCESS
             } else {
                 @Suppress("DEPRECATION")
-                txChar.value = next
+                charToSend.value = payload
                 @Suppress("DEPRECATION")
-                server.notifyCharacteristicChanged(device, txChar, false)
+                server.notifyCharacteristicChanged(device, charToSend, false)
             }
             if (!dispatched) {
                 isSending.set(false)
-                BridgeStore.log("Failed to dispatch BLE notification chunk")
+                BridgeStore.log("Failed to dispatch BLE notification (${charToSend.uuid})")
             }
         } catch (e: Exception) {
             isSending.set(false)

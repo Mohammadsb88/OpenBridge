@@ -71,6 +71,18 @@ struct UssdResponse: Codable, Equatable {
 struct AudioStatusInfo: Codable, Equatable {
     let direct: Bool
     let source: String
+    let transport: String?
+    let ts: Int64
+}
+
+struct VoiceCapabilityInfo: Codable, Equatable {
+    let verdict: String
+    let mode: String
+    let downlinkOk: Bool
+    let uplinkOk: Bool
+    let downlinkSource: String
+    let uplinkLabel: String
+    let summary: String
     let ts: Int64
 }
 
@@ -154,5 +166,47 @@ struct SipAccountConfig: Codable, Equatable {
     var isConfigured: Bool {
         !server.trimmingCharacters(in: .whitespaces).isEmpty &&
         !username.trimmingCharacters(in: .whitespaces).isEmpty
+    }
+}
+
+struct SmsConversationThread: Identifiable, Equatable {
+    let id: String
+    let primaryAddress: String
+    let displayTitle: String
+    let messagesAscending: [RelayedSms]
+    let latestMessage: RelayedSms
+
+    static func normalizedThreadKey(for sender: String) -> String {
+        let trimmed = sender.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty { return "unknown" }
+        let digitsOnly = trimmed.filter { $0.isNumber }
+        let isPhoneLike = !trimmed.contains(where: { $0.isLetter })
+        if isPhoneLike && digitsOnly.count >= 10 {
+            return String(digitsOnly.suffix(10))
+        }
+        return trimmed.lowercased()
+    }
+
+    static func group(_ messages: [RelayedSms]) -> [SmsConversationThread] {
+        var buckets: [String: [RelayedSms]] = [:]
+        for sms in messages {
+            let key = normalizedThreadKey(for: sms.sender)
+            buckets[key, default: []].append(sms)
+        }
+        return buckets.compactMap { key, list in
+            let asc = list.sorted { $0.ts < $1.ts }
+            guard let latest = asc.last else { return nil }
+            let named = asc.reversed().first(where: { !$0.contactName.isEmpty })?.contactName ?? ""
+            let addr = asc.reversed().first(where: { !$0.sender.isEmpty })?.sender ?? key
+            let title = named.isEmpty ? addr : named
+            return SmsConversationThread(
+                id: key,
+                primaryAddress: addr,
+                displayTitle: title,
+                messagesAscending: asc,
+                latestMessage: latest
+            )
+        }
+        .sorted { $0.latestMessage.ts > $1.latestMessage.ts }
     }
 }

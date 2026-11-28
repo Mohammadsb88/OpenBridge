@@ -5,10 +5,15 @@
 - **Peripheral (GATT Server):** Android device
 - **Central (GATT Client):** iOS device (supports `UIBackgroundModes: bluetooth-central` and `CBCentralManagerOptionRestoreIdentifierKey`)
 - **Primary Service UUID:** `7F5B0001-9A3C-4E1D-8B2A-1C4D5E6F7A01`
-  - **RX Characteristic (iOS -> Android):** `7F5B0002-9A3C-4E1D-8B2A-1C4D5E6F7A01`
+  - **RX Characteristic (iOS -> Android JSON Control):** `7F5B0002-9A3C-4E1D-8B2A-1C4D5E6F7A01`
     - Properties: `Write`, `Write Without Response`
-  - **TX Characteristic (Android -> iOS):** `7F5B0003-9A3C-4E1D-8B2A-1C4D5E6F7A01`
+  - **TX Characteristic (Android -> iOS JSON Events):** `7F5B0003-9A3C-4E1D-8B2A-1C4D5E6F7A01`
     - Properties: `Notify`, `Read`
+    - Descriptor: CCCD (`00002902-0000-1000-8000-00805F9B34FB`)
+  - **AUDIO_RX Characteristic (iOS -> Android Binary Encrypted ADPCM):** `7F5B0004-9A3C-4E1D-8B2A-1C4D5E6F7A01`
+    - Properties: `Write Without Response`
+  - **AUDIO_TX Characteristic (Android -> iOS Binary Encrypted ADPCM):** `7F5B0005-9A3C-4E1D-8B2A-1C4D5E6F7A01`
+    - Properties: `Notify`
     - Descriptor: CCCD (`00002902-0000-1000-8000-00805F9B34FB`)
 
 ## 2. Transport Framing
@@ -179,10 +184,16 @@ Because BLE characteristics split writes/notifications according to the negotiat
 - iOS sends `{"type":"SYNC_REQUEST","scope":"all"}`.
 - Android streams batched `SMS_HISTORY`, `CALL_HISTORY`, `CONTACTS_SYNC` payloads.
 
-### `AUDIO_STATUS` (Android -> iOS)
-- Reports active Android capture source (`direct: true/false`, `source: "VOICE_CALL (Direct)" | ...`).
+### `AUDIO_STATUS` & `VOICE_CAPABILITY` (Android -> iOS)
+- `AUDIO_STATUS`: Reports active capture path & transport (`direct: true/false`, `source: "VOICE_CALL (Direct) | ..."`, `transport: "ble_adpcm" | "wifi_pcm"`).
+- `VOICE_CAPABILITY`: Reports Android compatibility probe (`downlinkOk`, `uplinkOk`, `verdict: "two_way_direct" | "downlink_only" | "fallback_only"`, `summary`).
 
-## 5. Local Wi-Fi Audio Stream (Optional Port 54810)
-- Transport: TCP stream on Android's Hotspot / local Wi-Fi IP (`wifiIp:54810`).
-- Format: Raw 16-bit signed little-endian PCM, 16,000 Hz, mono (`32,000 bytes/sec`).
-- Both endpoints read and write full-duplex PCM frames once a call is answered (`ACCEPT` / `OFFHOOK`).
+## 5. Dual-Transport Voice Audio
+1. **Pure BLE Compressed Voice (Zero Wi-Fi Required):**
+   - Codec: **IMA-ADPCM 4-bit, 8,000 Hz mono**, 20 ms frames (`160` samples -> `80` ADPCM bytes).
+   - Plaintext (`86 bytes`): `seq_u16_le (2B) || predictor_i16_le (2B) || stepIndex_u8 (1B) || flags_u8 (1B) || adpcm (80B)`.
+   - Wire Packet (`111 bytes`): `dir (1B: 0x01=A2I, 0x02=I2A) || counter_u64_be (8B) || AES-256-GCM(key, nonce="OBA2"/"OBI2"||counter_u64_be, plaintext) (86+16B)`.
+2. **Local Wi-Fi HD Audio Stream (Optional Auto-Upgrade, Port 54810):**
+   - Transport: TCP stream on Android's Hotspot / local Wi-Fi IP (`wifiIp:54810`).
+   - Format: Raw 16-bit signed little-endian PCM, 16,000 Hz, mono (`32,000 bytes/sec`).
+   - Used automatically when Hotspot / same Wi-Fi is reachable within 1.5s; otherwise falls back seamlessly to BLE ADPCM.

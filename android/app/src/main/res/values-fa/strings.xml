@@ -29,6 +29,20 @@
     <string name="permissions_title">تنظیمات و مجوزهای گوشی</string>
     <string name="permissions_all_ok">تمامی مجوزهای لازم فعال هستند</string>
     <string name="permissions_missing">برای عملکرد کامل مجوزها را تایید کنید</string>
+    <string name="btn_oem_autostart">اجرای خودکار پس‌زمینه</string>
+
+    <string name="compat_title">تست سازگاری صدای تماس گوشی</string>
+    <string name="compat_btn_probe">بررسی سخت‌افزار صدای تماس</string>
+    <string name="compat_checking">در حال بررسی مسیرهای صدای تماس…</string>
+    <string name="compat_untested">یک تست سریع بگیرید تا پشتیبانی مستقیم صدای تماس (حالت داخل کیف) روی این گوشی بررسی شود.</string>
+    <string name="compat_verdict_two_way">آماده مکالمه مستقیم دوطرفه (بدون اسپیکر)</string>
+    <string name="compat_verdict_downlink">شنیدن مستقیم فعال (میکروفون نیاز به اسپیکر)</string>
+    <string name="compat_verdict_fallback">حالت استاندارد بلوتوث + اسپیکر فعال</string>
+    <string name="shizuku_status_ready">سرویس Shizuku فعال و تایید شده</string>
+    <string name="shizuku_status_perm">Shizuku روشن است — دکمه تایید را بزنید</string>
+    <string name="shizuku_status_off">Shizuku خاموش است (اختیاری برای حالت کیف)</string>
+    <string name="audio_transport_ble">مسیر صدا: بلوتوث خالص ADPCM (بدون نیاز به وای‌فای)</string>
+    <string name="audio_transport_wifi">مسیر صدا: وای‌فای / هات‌اسپات HD (۱۶ کیلوهرتز)</string>
 
     <string name="voice_title">حالت تماس صوتی</string>
     <string name="voice_mode_standard">استاندارد (کنترل تماس + صدای هات‌اسپات)</string>

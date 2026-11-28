@@ -118,11 +118,34 @@ object BridgeModels {
             .toString()
     }
 
-    fun audioStatusJson(direct: Boolean, source: String): String {
+    fun audioStatusJson(direct: Boolean, source: String, transport: String = "wifi_pcm"): String {
         return JSONObject()
             .put("type", "AUDIO_STATUS")
             .put("direct", direct)
             .put("source", source)
+            .put("transport", transport)
+            .put("ts", System.currentTimeMillis())
+            .toString()
+    }
+
+    fun voiceCapabilityJson(
+        verdict: String,
+        mode: String,
+        downlinkOk: Boolean,
+        uplinkOk: Boolean,
+        downlinkSource: String,
+        uplinkLabel: String,
+        summary: String
+    ): String {
+        return JSONObject()
+            .put("type", "VOICE_CAPABILITY")
+            .put("verdict", verdict)
+            .put("mode", mode)
+            .put("downlinkOk", downlinkOk)
+            .put("uplinkOk", uplinkOk)
+            .put("downlinkSource", downlinkSource)
+            .put("uplinkLabel", uplinkLabel)
+            .put("summary", summary)
             .put("ts", System.currentTimeMillis())
             .toString()
     }

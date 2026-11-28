@@ -93,6 +93,9 @@ import org.openbridge.android.R
 import org.openbridge.android.data.BleConnectionState
 import org.openbridge.android.data.BridgeStore
 import org.openbridge.android.data.RelayedEvent
+import org.openbridge.android.data.VoiceCapabilityState
+import androidx.compose.material.icons.filled.GraphicEq
+import androidx.compose.material3.CircularProgressIndicator
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -125,10 +128,14 @@ fun OpenBridgeApp(
     allPermissionsGranted: Boolean,
     missingPermissionsList: List<String>,
     shizukuReady: Boolean,
+    shizukuAlive: Boolean,
     rootAvailable: Boolean,
+    compatibilityChecking: Boolean,
     onRequestPermissions: () -> Unit,
     onRequestBatteryUnrestricted: () -> Unit,
+    onOpenOemAutostart: () -> Unit,
     onRequestShizuku: () -> Unit,
+    onRunCompatibilityCheck: () -> Unit,
     onToggleForwarding: (Boolean, String) -> Unit,
     onStartBridge: () -> Unit,
     onStopBridge: () -> Unit,
@@ -152,6 +159,8 @@ fun OpenBridgeApp(
         val forwardSip by BridgeStore.forwardSipNumber.collectAsState()
         val wifiIp by BridgeStore.wifiIp.collectAsState()
         val autoSpeaker by BridgeStore.autoSpeaker.collectAsState()
+        val voiceCapability by BridgeStore.voiceCapability.collectAsState()
+        val activeTransport by BridgeStore.activeAudioTransport.collectAsState()
 
         Scaffold(
             containerColor = NavyBg,
@@ -241,10 +250,18 @@ fun OpenBridgeApp(
                     connectionState = connectionState,
                     pairedPeer = pairedPeer,
                     wifiIp = wifiIp,
+                    activeTransport = activeTransport,
+                    shizukuReady = shizukuReady,
+                    shizukuAlive = shizukuAlive,
+                    voiceCapability = voiceCapability,
+                    compatibilityChecking = compatibilityChecking,
                     allPermissionsGranted = allPermissionsGranted,
                     missingPermissionsList = missingPermissionsList,
                     onRequestPermissions = onRequestPermissions,
                     onRequestBatteryUnrestricted = onRequestBatteryUnrestricted,
+                    onOpenOemAutostart = onOpenOemAutostart,
+                    onRequestShizuku = onRequestShizuku,
+                    onRunCompatibilityCheck = onRunCompatibilityCheck,
                     onShowQr = { showQrDialog = true },
                     onStartBridge = onStartBridge,
                     onStopBridge = onStopBridge,
@@ -297,10 +314,18 @@ private fun BridgeHomeTab(
     connectionState: BleConnectionState,
     pairedPeer: String?,
     wifiIp: String,
+    activeTransport: String,
+    shizukuReady: Boolean,
+    shizukuAlive: Boolean,
+    voiceCapability: VoiceCapabilityState?,
+    compatibilityChecking: Boolean,
     allPermissionsGranted: Boolean,
     missingPermissionsList: List<String>,
     onRequestPermissions: () -> Unit,
     onRequestBatteryUnrestricted: () -> Unit,
+    onOpenOemAutostart: () -> Unit,
+    onRequestShizuku: () -> Unit,
+    onRunCompatibilityCheck: () -> Unit,
     onShowQr: () -> Unit,
     onStartBridge: () -> Unit,
     onStopBridge: () -> Unit,
@@ -369,6 +394,23 @@ private fun BridgeHomeTab(
                             text = "Hotspot Audio IP: $wifiIp",
                             style = MaterialTheme.typography.labelMedium,
                             color = CyanAccent
+                        )
+                    }
+                }
+                if (activeTransport.isNotBlank()) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Icon(Icons.Default.GraphicEq, contentDescription = null, tint = EmeraldOk, modifier = Modifier.size(16.dp))
+                        Text(
+                            text = if (activeTransport == "ble_adpcm") {
+                                stringResource(R.string.audio_transport_ble)
+                            } else {
+                                stringResource(R.string.audio_transport_wifi)
+                            },
+                            style = MaterialTheme.typography.labelMedium,
+                            color = EmeraldOk
                         )
                     }
                 }
@@ -456,6 +498,102 @@ private fun BridgeHomeTab(
                         Icon(Icons.Default.BatteryChargingFull, contentDescription = null, modifier = Modifier.size(16.dp))
                         Spacer(Modifier.width(4.dp))
                         Text(stringResource(R.string.btn_battery_optimization), fontSize = 12.sp)
+                    }
+                }
+                OutlinedButton(
+                    onClick = onOpenOemAutostart,
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(12.dp)
+                ) {
+                    Icon(Icons.Default.Security, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text(stringResource(R.string.btn_oem_autostart), fontSize = 12.sp)
+                }
+            }
+        }
+
+        // Hardware Call Audio Compatibility Card
+        Card(
+            shape = RoundedCornerShape(18.dp),
+            colors = CardDefaults.cardColors(containerColor = SlateCard),
+            modifier = Modifier
+                .fillMaxWidth()
+                .border(1.dp, SlateCardBorder, RoundedCornerShape(18.dp))
+        ) {
+            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Icon(Icons.Default.GraphicEq, contentDescription = null, tint = CyanAccent)
+                    Text(
+                        text = stringResource(R.string.compat_title),
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                }
+
+                Text(
+                    text = when {
+                        shizukuReady -> stringResource(R.string.shizuku_status_ready)
+                        shizukuAlive -> stringResource(R.string.shizuku_status_perm)
+                        else -> stringResource(R.string.shizuku_status_off)
+                    },
+                    style = MaterialTheme.typography.labelMedium,
+                    color = if (shizukuReady) EmeraldOk else AmberWarn
+                )
+
+                val cap = voiceCapability
+                if (cap == null) {
+                    Text(
+                        text = stringResource(R.string.compat_untested),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                } else {
+                    val (badgeColor, badgeText) = when (cap.verdict) {
+                        "two_way_direct" -> EmeraldOk to stringResource(R.string.compat_verdict_two_way)
+                        "downlink_only" -> CyanAccent to stringResource(R.string.compat_verdict_downlink)
+                        else -> AmberWarn to stringResource(R.string.compat_verdict_fallback)
+                    }
+                    Surface(
+                        shape = RoundedCornerShape(10.dp),
+                        color = badgeColor.copy(alpha = 0.14f),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Text(badgeText, color = badgeColor, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                            Text(
+                                text = cap.summary,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                }
+
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                    Button(
+                        onClick = onRunCompatibilityCheck,
+                        enabled = !compatibilityChecking,
+                        modifier = Modifier.weight(1f),
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        if (compatibilityChecking) {
+                            CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp, color = MaterialTheme.colorScheme.onPrimary)
+                            Spacer(Modifier.width(6.dp))
+                            Text(stringResource(R.string.compat_checking), fontSize = 12.sp)
+                        } else {
+                            Text(stringResource(R.string.compat_btn_probe), fontSize = 12.sp)
+                        }
+                    }
+                    if (shizukuAlive && !shizukuReady) {
+                        OutlinedButton(
+                            onClick = onRequestShizuku,
+                            shape = RoundedCornerShape(12.dp)
+                        ) {
+                            Text(stringResource(R.string.btn_grant_shizuku), fontSize = 12.sp)
+                        }
                     }
                 }
             }
